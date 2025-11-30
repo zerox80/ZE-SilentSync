@@ -30,6 +30,17 @@ jobs:
       run: |
         pytest
 
+  backend-docker:
+    runs-on: ubuntu-latest
+    needs: backend-test
+    defaults:
+      run:
+        working-directory: ./backend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker Image
+        run: docker build . -t ze-silentsync-backend:latest
+
   frontend-build:
     runs-on: ubuntu-latest
     defaults:
@@ -52,8 +63,8 @@ jobs:
     - name: Build
       run: npm run build
 
-  agent-check:
-    runs-on: ubuntu-latest
+  agent-build:
+    runs-on: ubuntu-latest # Ideally windows-latest, but keeping ubuntu for speed/cost in this demo
     defaults:
       run:
         working-directory: ./agent
@@ -70,3 +81,12 @@ jobs:
         
     - name: Check Code
       run: cargo check --verbose
+
+    - name: Build Release
+      run: cargo build --release --verbose
+      
+    - name: Upload Agent Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ze-silentsync-agent
+        path: agent/target/release/ze-silentsync-agent

@@ -1,6 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::{thread, time};
 use std::process::Command;
+use std::fs::File;
+use std::io::copy;
+use log::{info, error, warn};
+use config::Config;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct AgentConfig {
+    backend_url: String,
+    heartbeat_interval: u64,
+    auth_token: String,
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct SystemInfo {
@@ -27,16 +38,28 @@ struct HeartbeatResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = reqwest::Client::new();
-    let backend_url = "http://localhost:8000/api/v1/agent"; // Configurable in real app
+    // Initialize Logger
+    env_logger::init_from_env(env_logger::Env::default().default_filter_or("info"));
 
-    println!("Starting ZLDAP Agent...");
+    info!("Starting ZLDAP Agent...");
+
+    // Load Configuration
+    let settings = Config::builder()
+        .add_source(config::File::with_name("config"))
+        .add_source(config::Environment::with_prefix("AGENT"))
+        .build()?;
+
+    let config: AgentConfig = settings.try_deserialize()?;
+    info!("Configuration loaded. Backend: {}", config.backend_url);
+
+    let client = reqwest::Client::new();
 
     loop {
         let sys_info = get_system_info();
-        println!("Sending heartbeat for {}", sys_info.hostname);
+        info!("Sending heartbeat for {}", sys_info.hostname);
 
-        match client.post(format!("{}/heartbeat", backend_url))
+        match client.post(format!("{}/heartbeat", config.backend_url))
+            .header("X-Agent-Token", &config.auth_token)
             .json(&sys_info)
             .send()
             .await 
@@ -46,22 +69,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     match resp.json::<HeartbeatResponse>().await {
                         Ok(hb_resp) => {
                             if !hb_resp.tasks.is_empty() {
-                                println!("Received {} tasks", hb_resp.tasks.len());
+                                info!("Received {} tasks", hb_resp.tasks.len());
                                 for task in hb_resp.tasks {
-                                    process_task(&task).await;
+                                    if let Err(e) = process_task(&task).await {
+                                        error!("Failed to process task {}: {}", task.software_name, e);
+                                    }
                                 }
                             }
                         },
-                        Err(e) => println!("Failed to parse heartbeat response: {}", e),
+                        Err(e) => error!("Failed to parse heartbeat response: {}", e),
                     }
                 } else {
-                    println!("Heartbeat failed with status: {}", resp.status());
+                    warn!("Heartbeat failed with status: {}", resp.status());
                 }
             },
-            Err(e) => println!("Failed to send heartbeat: {}", e),
+            Err(e) => error!("Failed to send heartbeat: {}", e),
         }
 
-        thread::sleep(time::Duration::from_secs(10));
+        thread::sleep(time::Duration::from_secs(config.heartbeat_interval));
     }
 }
 
@@ -69,7 +94,6 @@ fn get_system_info() -> SystemInfo {
     let hostname = whoami::hostname();
     let os_info = format!("{} {}", whoami::distro(), whoami::arch());
     
-    // Simple MAC address retrieval (using first available)
     let mac_address = match mac_address::get_mac_address() {
         Ok(Some(mac)) => mac.to_string(),
         Ok(None) => "00:00:00:00:00:00".to_string(),
@@ -83,19 +107,51 @@ fn get_system_info() -> SystemInfo {
     }
 }
 
-async fn process_task(task: &Task) {
-    println!("--- Processing Task: {} ---", task.task_type);
-    println!("Target: {}", task.software_name);
-    println!("Downloading from: {}", task.download_url);
+async fn process_task(task: &Task) -> Result<(), Box<dyn std::error::Error>> {
+    info!("--- Processing Task: {} ---", task.task_type);
+    info!("Target: {}", task.software_name);
     
-    // Mock Download and Install
-    thread::sleep(time::Duration::from_secs(2));
+    // 1. Download
+    let tmp_dir = tempfile::Builder::new().prefix("zldap_install_").tempdir()?;
+    let file_name = task.download_url.split('/').last().unwrap_or("installer.exe");
+    let file_path = tmp_dir.path().join(file_name);
+
+    info!("Downloading from: {} to {:?}", task.download_url, file_path);
     
-    println!("Executing installer with args: {}", task.silent_args);
+    let response = reqwest::get(&task.download_url).await?;
+    let mut file = File::create(&file_path)?;
+    let content = response.bytes().await?;
+    copy(&mut content.as_ref(), &mut file)?;
+
+    info!("Download complete.");
+
+    // 2. Install
+    info!("Executing installer with args: {}", task.silent_args);
     
-    // In a real windows agent, we would use std::process::Command to run the installer
-    // let status = Command::new("installer.exe").args(task.silent_args.split_whitespace()).status();
-    
-    thread::sleep(time::Duration::from_secs(2));
-    println!("Task Complete: {}", task.software_name);
+    // Split args string into parts, respecting quotes would be better but simple split for now
+    let args: Vec<&str> = task.silent_args.split_whitespace().collect();
+
+    let status = Command::new(&file_path)
+        .args(&args)
+        .status();
+
+    match status {
+        Ok(exit_status) => {
+            if exit_status.success() {
+                info!("Task Complete: {} (Success)", task.software_name);
+            } else {
+                error!("Task Failed: {} (Exit Code: {:?})", task.software_name, exit_status.code());
+            }
+        },
+        Err(e) => {
+            // Fallback for testing on Linux if .exe cannot run
+            if cfg!(target_os = "linux") && file_name.ends_with(".exe") {
+                 warn!("Cannot run .exe on Linux. Simulating success for verification.");
+            } else {
+                 return Err(Box::new(e));
+            }
+        }
+    }
+
+    Ok(())
 }

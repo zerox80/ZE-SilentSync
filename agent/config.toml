@@ -1,0 +1,10 @@
+# ZLDAP Agent Configuration
+
+# The URL of the ZLDAP Backend API
+backend_url = "http://localhost:8000/api/v1/agent"
+
+# Interval in seconds between heartbeats
+heartbeat_interval = 10
+
+# Shared Secret Token (Must match backend)
+auth_token = "agent-unsafe-s"

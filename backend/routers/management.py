@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlmodel import Session, select
 from typing import List
-from ..database import get_session
-from ..models import Software, Deployment, Machine
-from ..ldap_service import ldap_service
+from database import get_session
+from auth import get_current_admin
+from models import Software, Deployment, Machine, Admin
+from ldap_service import ldap_service
 
-router = APIRouter(prefix="/api/v1/management", tags=["management"])
+router = APIRouter(prefix="/api/v1/management", tags=["management"], dependencies=[Depends(get_current_admin)])
 
 @router.get("/software", response_model=List[Software])
 def get_software(session: Session = Depends(get_session)):
@@ -40,3 +41,19 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, sessio
     session.add(deployment)
     session.commit()
     return {"status": "deployment scheduled"}
+
+@router.post("/upload")
+async def upload_file(file: UploadFile = File(...), session: Session = Depends(get_session)):
+    import shutil
+    import os
+    
+    UPLOAD_DIR = "uploads"
+    os.makedirs(UPLOAD_DIR, exist_ok=True)
+    
+    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    # Return the URL where it can be accessed
+    # In production, this should be a full URL or relative to a configured base
+    return {"filename": file.filename, "url": f"/static/{file.filename}"}

@@ -1,15 +1,14 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from .database import create_db_and_tables
-from .routers import management, agent
+from database import create_db_and_tables
+from routers import management, agent, auth
+
+from config import settings
 
 app = FastAPI(title="ZE-SilentSync Manager", version="0.1.0")
 
 # CORS Configuration
-origins = [
-    "http://localhost:5173",  # Vite default
-    "http://localhost:3000",
-]
+origins = settings.ALLOWED_ORIGINS
 
 app.add_middleware(
     CORSMiddleware,
@@ -23,8 +22,15 @@ app.add_middleware(
 def on_startup():
     create_db_and_tables()
 
+from fastapi.staticfiles import StaticFiles
+import os
+
+app.include_router(auth.router)
 app.include_router(management.router)
 app.include_router(agent.router)
+
+os.makedirs("uploads", exist_ok=True)
+app.mount("/static", StaticFiles(directory="uploads"), name="static")
 
 @app.get("/")
 def read_root():
