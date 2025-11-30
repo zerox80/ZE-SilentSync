@@ -43,12 +43,10 @@ export default function SoftwareLibrary() {
         }
 
         try {
-            for (const softwareId of selected) {
-                for (const targetId of targets) {
-                    const targetType = targetId.startsWith('OU=') ? 'ou' : 'computer'
-                    await api.post(`/management/deploy?software_id=${softwareId}&target_dn=${targetId}&target_type=${targetType}`)
-                }
-            }
+            await api.post('/management/deploy/bulk', {
+                software_ids: selected,
+                target_dns: targets
+            })
             alert(`Successfully scheduled ${selected.length} apps to ${targets.length} targets!`)
             setSelected([])
         } catch (err) {

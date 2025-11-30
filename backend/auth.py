@@ -54,10 +54,8 @@ async def get_current_admin(token: str = Depends(oauth2_scheme), session: Sessio
     return admin
 
 async def verify_agent_token(token: str = Depends(api_key_header)):
-    # Simple Shared Secret for now. In production, this should be a DB lookup or signed token.
-    # We use a derived secret from the main SECRET_KEY for simplicity in this MVP.
-    expected_token = f"agent-{settings.SECRET_KEY[:8]}" 
-    if token != expected_token:
+    # Use the configured AGENT_TOKEN
+    if token != settings.AGENT_TOKEN:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Agent Token",

@@ -56,7 +56,16 @@ class LDAPService:
                 comp_dn = str(comp.distinguishedName)
                 comp_name = str(comp.name)
                 # Find parent OU
-                parent_dn = ",".join(comp_dn.split(",")[1:])
+                # Find parent OU
+                # Robust parent resolution:
+                # Split by comma, remove the first component (CN=...), and join back.
+                # This works for standard AD DNs.
+                parts = comp_dn.split(",")
+                if len(parts) > 1:
+                    parent_dn = ",".join(parts[1:])
+                else:
+                    parent_dn = "Root"
+
                 if parent_dn in tree:
                     tree[parent_dn]["children"].append({"name": comp_name, "type": "computer", "dn": comp_dn})
                 else:

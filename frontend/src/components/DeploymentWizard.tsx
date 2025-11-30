@@ -1,46 +1,30 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { api } from '../auth/AuthContext'
 import { Folder, Monitor, ChevronRight, ChevronDown, CheckSquare, Square } from 'lucide-react'
 
-// Mock AD Tree Data
-const AD_TREE = {
-    name: "example.com",
-    type: "domain",
-    id: "DC=example,DC=com",
-    children: [
-        {
-            name: "Management",
-            type: "ou",
-            id: "OU=Management,DC=example,DC=com",
-            children: [
-                { name: "AdminPC", type: "computer", id: "CN=AdminPC,OU=Management,DC=example,DC=com" },
-                { name: "ManagerLaptop", type: "computer", id: "CN=ManagerLaptop,OU=Management,DC=example,DC=com" }
-            ]
-        },
-        {
-            name: "Sales",
-            type: "ou",
-            id: "OU=Sales,DC=example,DC=com",
-            children: [
-                { name: "Sales01", type: "computer", id: "CN=Sales01,OU=Sales,DC=example,DC=com" },
-                { name: "Sales02", type: "computer", id: "CN=Sales02,OU=Sales,DC=example,DC=com" }
-            ]
-        },
-        {
-            name: "IT",
-            type: "ou",
-            id: "OU=IT,DC=example,DC=com",
-            children: [
-                { name: "DevWorkstation", type: "computer", id: "CN=DevWorkstation,OU=IT,DC=example,DC=com" }
-            ]
-        }
-    ]
-}
+
 
 export default function DeploymentWizard() {
     const [selected, setSelected] = useState<string[]>(() => {
         const saved = localStorage.getItem('selectedTargets')
         return saved ? JSON.parse(saved) : []
     })
+    const [treeData, setTreeData] = useState<any>(null)
+    const [loading, setLoading] = useState(true)
+
+    useEffect(() => {
+        const fetchTree = async () => {
+            try {
+                const res = await api.get('/management/ad/tree')
+                setTreeData(res.data)
+            } catch (err) {
+                console.error("Failed to fetch AD tree", err)
+            } finally {
+                setLoading(false)
+            }
+        }
+        fetchTree()
+    }, [])
 
     const toggleSelect = (id: string) => {
         if (selected.includes(id)) {
@@ -79,7 +63,9 @@ export default function DeploymentWizard() {
             </div>
 
             <div className="bg-dark border border-gray-800 rounded-xl p-6">
-                <TreeNode node={AD_TREE} level={0} selected={selected} onToggle={toggleSelect} />
+                {loading && <div className="text-gray-400">Loading AD Structure...</div>}
+                {!loading && treeData && <TreeNode node={treeData} level={0} selected={selected} onToggle={toggleSelect} />}
+                {!loading && !treeData && <div className="text-red-400">Failed to load AD structure.</div>}
             </div>
         </div>
     )

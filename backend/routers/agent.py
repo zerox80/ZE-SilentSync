@@ -39,22 +39,37 @@ def heartbeat(
     current_time = datetime.utcnow()
     tasks = []
     
-    # 1. Get all deployments potentially relevant
-    # In a real app with many deployments, we would filter in SQL.
-    # Here we fetch all and filter in python for logic clarity (OU matching).
-    all_deployments = session.exec(select(Deployment)).all()
+    # 1. Get relevant deployments
+    # Optimization: Filter by machine ID or OU type in SQL
+    statement = select(Deployment).where(
+        ((Deployment.target_type == "machine") & (Deployment.target_value == str(machine.id))) |
+        (Deployment.target_type == "ou")
+    )
+    potential_deployments = session.exec(statement).all()
     
-    for dep in all_deployments:
+    for dep in potential_deployments:
         is_target = False
         
         # Target Check
-        if dep.target_type == "machine" and dep.target_value == str(machine.id):
-            is_target = True
-        elif dep.target_type == "ou":
-            # Simple string containment for OU path (e.g. "CN=PC,OU=Sales,DC=..." contains "OU=Sales")
-            # In production, use proper LDAP DN parsing.
-            if dep.target_value in machine.ou_path:
+        if dep.target_type == "machine":
+            # Already filtered by SQL, but safe to keep check
+            if dep.target_value == str(machine.id):
                 is_target = True
+        elif dep.target_type == "ou":
+            # Robust OU matching
+            # Check if the machine's OU path ends with the target OU DN (case-insensitive)
+            # This ensures we match "OU=Sales,DC=example,DC=com" with target "OU=Sales,DC=example,DC=com"
+            # but NOT "OU=SalesForce,DC=..." with target "OU=Sales,DC=..."
+            
+            machine_dn = machine.ou_path.lower()
+            target_dn = dep.target_value.lower()
+            
+            # Simple suffix check is better than 'in', but ideally we parse DNs.
+            # For this fix, we ensure it matches as a component suffix.
+            if machine_dn.endswith(target_dn):
+                # Ensure boundary safety (e.g. ensure preceding char is ',' or it's exact match)
+                if machine_dn == target_dn or machine_dn.endswith("," + target_dn):
+                    is_target = True
                 
         if is_target:
             # Schedule Check

@@ -21,6 +21,7 @@ class Admin(SQLModel, table=True):
     full_name: Optional[str] = None
     email: Optional[str] = None
     role: str = Field(default="admin") # admin, viewer
+    hashed_password: str
     last_login: Optional[datetime] = None
 
 class Machine(SQLModel, table=True):

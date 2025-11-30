@@ -40,20 +40,55 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, sessio
     )
     session.add(deployment)
     session.commit()
+    session.add(deployment)
+    session.commit()
     return {"status": "deployment scheduled"}
+
+class BulkDeploymentRequest(SQLModel):
+    software_ids: List[int]
+    target_dns: List[str]
+
+@router.post("/deploy/bulk")
+def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session)):
+    count = 0
+    for software_id in request.software_ids:
+        for target_dn in request.target_dns:
+            # Simple heuristic for target type, similar to frontend
+            target_type = "ou" if "OU=" in target_dn else "machine"
+            
+            deployment = Deployment(
+                software_id=software_id,
+                target_value=target_dn,
+                target_type=target_type
+            )
+            session.add(deployment)
+            count += 1
+            
+    session.commit()
+    return {"status": "bulk deployment scheduled", "count": count}
 
 @router.post("/upload")
 async def upload_file(file: UploadFile = File(...), session: Session = Depends(get_session)):
     import shutil
     import os
+    import re
     
     UPLOAD_DIR = "uploads"
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     
-    file_path = os.path.join(UPLOAD_DIR, file.filename)
+    # Sanitize filename
+    # 1. Use basename to strip any directory components
+    filename = os.path.basename(file.filename)
+    # 2. Remove any non-alphanumeric characters except . _ - to be extra safe
+    filename = re.sub(r'[^a-zA-Z0-9._-]', '', filename)
+    
+    if not filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
     # Return the URL where it can be accessed
     # In production, this should be a full URL or relative to a configured base
-    return {"filename": file.filename, "url": f"/static/{file.filename}"}
+    return {"filename": filename, "url": f"/static/{filename}"}
