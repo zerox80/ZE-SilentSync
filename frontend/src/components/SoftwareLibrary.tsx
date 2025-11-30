@@ -34,13 +34,22 @@ export default function SoftwareLibrary() {
     const handleDeploy = async () => {
         if (selected.length === 0) return;
 
-        // For the Demo, we will just deploy to a hardcoded "TEST-PC-01" or "OU=Sales"
-        // In a real app, this would open the DeploymentWizard.
+        const savedTargets = localStorage.getItem('selectedTargets')
+        const targets = savedTargets ? JSON.parse(savedTargets) : []
+
+        if (targets.length === 0) {
+            alert("No targets selected! Go to 'Targets (AD)' tab first.")
+            return
+        }
+
         try {
-            for (const id of selected) {
-                await api.post(`/management/deploy?software_id=${id}&target_dn=OU=Sales,DC=example,DC=com&target_type=ou`)
+            for (const softwareId of selected) {
+                for (const targetId of targets) {
+                    const targetType = targetId.startsWith('OU=') ? 'ou' : 'computer'
+                    await api.post(`/management/deploy?software_id=${softwareId}&target_dn=${targetId}&target_type=${targetType}`)
+                }
             }
-            alert(`Successfully scheduled deployment for ${selected.length} apps to OU=Sales!`)
+            alert(`Successfully scheduled ${selected.length} apps to ${targets.length} targets!`)
             setSelected([])
         } catch (err) {
             alert("Deployment failed! Check console.")
@@ -62,7 +71,7 @@ export default function SoftwareLibrary() {
                     className="bg-primary hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     disabled={selected.length === 0}
                 >
-                    Deploy {selected.length} Apps (Demo: to Sales OU)
+                    Deploy {selected.length} Apps
                 </button>
             </div>
 

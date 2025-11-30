@@ -15,6 +15,11 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
 
+    // Set base URL once
+    useEffect(() => {
+        axios.defaults.baseURL = API_URL;
+    }, []);
+
     useEffect(() => {
         if (token) {
             localStorage.setItem('token', token);

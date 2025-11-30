@@ -3,7 +3,7 @@ uvicorn[standard]
 sqlmodel
 ldap3
 python-multipart
-pyjwt
+python-jose[cryptography]
 passlib[bcrypt]
 pytest
 httpx
