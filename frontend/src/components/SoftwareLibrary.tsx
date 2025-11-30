@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Check, Download, Package } from 'lucide-react'
+import { Check, Package } from 'lucide-react'
 import { api } from '../auth/AuthContext'
 
 export default function SoftwareLibrary() {
@@ -14,7 +14,8 @@ export default function SoftwareLibrary() {
     const fetchSoftware = async () => {
         try {
             const res = await api.get('/management/software')
-            setSoftware(res.data)
+            const data = Array.isArray(res.data) ? res.data : [];
+            setSoftware(data)
         } catch (err) {
             console.error("Failed to fetch software", err)
         } finally {
@@ -66,7 +67,7 @@ export default function SoftwareLibrary() {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                {software.map((app) => (
+                {Array.isArray(software) && software.map((app) => (
                     <div
                         key={app.id}
                         onClick={() => toggleSelect(app.id)}
