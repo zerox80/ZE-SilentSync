@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+sqlmodel
+ldap3
+python-multipart
+pyjwt
+passlib[bcrypt]
+pytest
+httpx

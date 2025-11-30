@@ -1,0 +1,41 @@
+# General
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python / Backend
+__pycache__/
+*.py[cod]
+*$py.class
+backend/venv/
+backend/.env
+*.db
+*.sqlite3
+backend/.pytest_cache/
+backend/coverage.xml
+backend/htmlcov/
+
+# Node / Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+
+# Rust / Agent
+agent/target/
+agent/Cargo.lock
+**/*.rs.bk
+
+# OS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
