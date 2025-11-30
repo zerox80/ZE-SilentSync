@@ -1,10 +1,17 @@
 import { useState } from 'react'
-import { LayoutDashboard, AppWindow, Network, Send } from 'lucide-react'
+import { LayoutDashboard, AppWindow, Network, Send, LogOut } from 'lucide-react'
 import SoftwareLibrary from './components/SoftwareLibrary'
 import DeploymentWizard from './components/DeploymentWizard'
+import { AuthProvider, useAuth } from './auth/AuthContext'
+import Login from './components/Login'
 
-function App() {
+function AppContent() {
     const [activeTab, setActiveTab] = useState('library')
+    const { isAuthenticated, logout } = useAuth()
+
+    if (!isAuthenticated) {
+        return <Login />
+    }
 
     return (
         <div className="flex h-screen bg-darker text-white font-sans">
@@ -43,8 +50,17 @@ function App() {
                     />
                 </nav>
 
-                <div className="p-4 border-t border-gray-800 text-sm text-gray-500">
-                    v0.1.0 Alpha
+                <div className="p-4 border-t border-gray-800">
+                    <button
+                        onClick={logout}
+                        className="w-full flex items-center gap-3 px-4 py-2 text-gray-400 hover:text-red-400 transition-colors"
+                    >
+                        <LogOut size={20} />
+                        <span>Sign Out</span>
+                    </button>
+                    <div className="mt-4 text-xs text-center text-gray-600">
+                        v2.0 Enterprise
+                    </div>
                 </div>
             </aside>
 
@@ -66,6 +82,14 @@ function App() {
                 )}
             </main>
         </div>
+    )
+}
+
+function App() {
+    return (
+        <AuthProvider>
+            <AppContent />
+        </AuthProvider>
     )
 }
 

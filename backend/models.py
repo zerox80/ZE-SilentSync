@@ -65,7 +65,7 @@ class Deployment(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     
     machine: Optional[Machine] = Relationship(back_populates="deployments")
-    software: Optional[Software] = Relationship(back_populates="software")
+    software: Optional[Software] = Relationship(back_populates="deployments")
 
 class AuditLog(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
