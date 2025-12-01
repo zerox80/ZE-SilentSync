@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Check, Package, Plus } from 'lucide-react'
+import { Check, Package, Plus, Trash2 } from 'lucide-react'
 import { api } from '../auth/AuthContext'
 import AddSoftwareModal from './AddSoftwareModal'
 
@@ -8,6 +8,7 @@ export default function SoftwareLibrary() {
     const [software, setSoftware] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
     const [isAddModalOpen, setIsAddModalOpen] = useState(false)
+    const [forceReinstall, setForceReinstall] = useState(false)
 
     useEffect(() => {
         fetchSoftware()
@@ -33,6 +34,20 @@ export default function SoftwareLibrary() {
         }
     }
 
+    const handleDelete = async (e: React.MouseEvent, id: number) => {
+        e.stopPropagation()
+        if (!confirm("Are you sure you want to delete this software? This action cannot be undone.")) return;
+
+        try {
+            await api.delete(`/management/software/${id}`)
+            setSoftware(software.filter(s => s.id !== id))
+            setSelected(selected.filter(sId => sId !== id))
+        } catch (err) {
+            console.error("Failed to delete software", err)
+            alert("Failed to delete software")
+        }
+    }
+
     const handleDeploy = async (action: string = 'install') => {
         if (selected.length === 0) return;
 
@@ -48,7 +63,8 @@ export default function SoftwareLibrary() {
             await api.post('/management/deploy/bulk', {
                 software_ids: selected,
                 target_dns: targets,
-                action: action
+                action: action,
+                force_reinstall: forceReinstall
             })
             const verb = action === 'uninstall' ? 'uninstall' : 'deploy';
             alert(`Successfully scheduled to ${verb} ${selected.length} apps on ${targets.length} targets!`)
@@ -90,6 +106,18 @@ export default function SoftwareLibrary() {
                     >
                         Deploy {selected.length} Apps
                     </button>
+                    <div className="flex items-center gap-2 ml-2">
+                        <input
+                            type="checkbox"
+                            id="forceReinstall"
+                            checked={forceReinstall}
+                            onChange={(e) => setForceReinstall(e.target.checked)}
+                            className="w-4 h-4 rounded border-gray-600 bg-dark focus:ring-primary"
+                        />
+                        <label htmlFor="forceReinstall" className="text-sm text-gray-300 cursor-pointer select-none">
+                            Force Re-install
+                        </label>
+                    </div>
                 </div>
             </div>
 
@@ -119,9 +147,18 @@ export default function SoftwareLibrary() {
 
                         <h3 className="font-bold text-lg text-gray-100">{app.name}</h3>
                         <p className="text-sm text-gray-500">{app.version}</p>
-                        <div className="mt-2 flex gap-2">
-                            {app.is_msi && <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded">MSI</span>}
-                            <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">EXE</span>
+                        <div className="mt-2 flex gap-2 justify-between items-center">
+                            <div className="flex gap-2">
+                                {app.is_msi && <span className="text-xs bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded">MSI</span>}
+                                <span className="text-xs bg-gray-700 text-gray-300 px-2 py-0.5 rounded">EXE</span>
+                            </div>
+                            <button
+                                onClick={(e) => handleDelete(e, app.id)}
+                                className="p-1.5 text-gray-500 hover:text-red-400 hover:bg-red-400/10 rounded-lg transition-colors"
+                                title="Delete Software"
+                            >
+                                <Trash2 size={16} />
+                            </button>
                         </div>
                     </div>
                 ))}
