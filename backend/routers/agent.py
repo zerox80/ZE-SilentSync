@@ -57,6 +57,7 @@ def heartbeat(
     # --- Task Resolution Logic ---
     current_time = datetime.utcnow()
     tasks = []
+    processed_software_ids = set()
     
     print(f"DEBUG: Heartbeat for {hostname} (ID: {machine.id}). Checking deployments...")
 
@@ -72,6 +73,10 @@ def heartbeat(
     from models import MachineSoftwareLink
 
     for dep in potential_deployments:
+        # Deduplication: If we already have a task for this software in this batch, skip.
+        if dep.software_id in processed_software_ids:
+            continue
+
         is_target = False
         
         # Target Check
@@ -111,8 +116,9 @@ def heartbeat(
                 
                 # If Action is INSTALL
                 if dep.action == "install":
-                    if link and link.status == "installed":
-                        print(f"DEBUG: Dep {dep.id} skipped. Already installed.")
+                    # Stop infinite loops: Skip if installed OR failed
+                    if link and (link.status == "installed" or link.status == "failed"):
+                        print(f"DEBUG: Dep {dep.id} skipped. Status: {link.status}")
                         continue
                 # If Action is UNINSTALL
                 elif dep.action == "uninstall":
@@ -135,6 +141,7 @@ def heartbeat(
                     "silent_args": dep.software.silent_args,
                     "is_msi": dep.software.is_msi
                 })
+                processed_software_ids.add(dep.software_id)
             
     print(f"DEBUG: Returning {len(tasks)} tasks.")
     return {"status": "ok", "tasks": tasks}

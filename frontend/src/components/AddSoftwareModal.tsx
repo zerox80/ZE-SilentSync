@@ -44,7 +44,7 @@ export default function AddSoftwareModal({ isOpen, onClose, onSuccess }: AddSoft
                 ...prev,
                 download_url: res.data.url, // Assuming backend returns relative URL like /static/filename
                 is_msi: isMsi,
-                silent_args: isMsi ? '/qn' : '/S', // Default silent args guess
+                silent_args: isMsi ? '/qn' : '', // Only default for MSI, leave EXE empty
                 name: filename.replace(/\.(msi|exe)$/i, '')
             }))
         } catch (err) {
@@ -148,11 +148,10 @@ export default function AddSoftwareModal({ isOpen, onClose, onSuccess }: AddSoft
                                 <label className="text-sm font-medium text-gray-400">Silent Install Arguments</label>
                                 <input
                                     type="text"
-                                    required
                                     value={formData.silent_args}
                                     onChange={e => setFormData({ ...formData, silent_args: e.target.value })}
                                     className="w-full bg-black/50 border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-primary focus:outline-none font-mono text-sm"
-                                    placeholder="e.g. /S or /qn"
+                                    placeholder="e.g. /S or /qn (Optional)"
                                 />
                             </div>
                             <div className="space-y-2">
