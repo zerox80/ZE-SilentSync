@@ -5,19 +5,37 @@ from config import settings
 class LDAPService:
     def __init__(self):
         self.mock_structure = {
-            "DC=example,DC=com": {
-                "OU=Management": {
-                    "CN=AdminPC": {"type": "computer", "dn": "CN=AdminPC,OU=Management,DC=example,DC=com"},
-                    "CN=ManagerLaptop": {"type": "computer", "dn": "CN=ManagerLaptop,OU=Management,DC=example,DC=com"}
+            "id": "DC=example,DC=com",
+            "name": "example.com",
+            "type": "domain",
+            "children": [
+                {
+                    "id": "OU=Management,DC=example,DC=com",
+                    "name": "Management",
+                    "type": "ou",
+                    "children": [
+                        {"id": "CN=AdminPC,OU=Management,DC=example,DC=com", "name": "AdminPC", "type": "computer"},
+                        {"id": "CN=ManagerLaptop,OU=Management,DC=example,DC=com", "name": "ManagerLaptop", "type": "computer"}
+                    ]
                 },
-                "OU=Sales": {
-                    "CN=Sales01": {"type": "computer", "dn": "CN=Sales01,OU=Sales,DC=example,DC=com"},
-                    "CN=Sales02": {"type": "computer", "dn": "CN=Sales02,OU=Sales,DC=example,DC=com"}
+                {
+                    "id": "OU=Sales,DC=example,DC=com",
+                    "name": "Sales",
+                    "type": "ou",
+                    "children": [
+                        {"id": "CN=Sales01,OU=Sales,DC=example,DC=com", "name": "Sales01", "type": "computer"},
+                        {"id": "CN=Sales02,OU=Sales,DC=example,DC=com", "name": "Sales02", "type": "computer"}
+                    ]
                 },
-                "OU=IT": {
-                    "CN=DevWorkstation": {"type": "computer", "dn": "CN=DevWorkstation,OU=IT,DC=example,DC=com"}
+                {
+                    "id": "OU=IT,DC=example,DC=com",
+                    "name": "IT",
+                    "type": "ou",
+                    "children": [
+                        {"id": "CN=DevWorkstation,OU=IT,DC=example,DC=com", "name": "DevWorkstation", "type": "computer"}
+                    ]
                 }
-            }
+            ]
         }
 
     def get_ou_tree(self) -> Dict[str, Any]:

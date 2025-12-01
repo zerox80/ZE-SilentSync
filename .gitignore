@@ -5,7 +5,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
+.env
 # Python / Backend
 __pycache__/
 *.py[cod]
