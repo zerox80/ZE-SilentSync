@@ -11,6 +11,7 @@ class Settings:
     USE_MOCK_LDAP = os.getenv("USE_MOCK_LDAP", "True").lower() == "true"
     SECRET_KEY = os.getenv("SECRET_KEY")
     AGENT_TOKEN = os.getenv("AGENT_TOKEN")
+    AGENT_ONLY = os.getenv("AGENT_ONLY", "False").lower() == "true"
     ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
 
     def __init__(self):

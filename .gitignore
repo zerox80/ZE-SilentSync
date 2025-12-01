@@ -35,6 +35,7 @@ frontend/yarn-error.log*
 # Rust / Agent
 agent/target/
 agent/Cargo.lock
+agent/config.toml
 **/*.rs.bk
 
 # OS

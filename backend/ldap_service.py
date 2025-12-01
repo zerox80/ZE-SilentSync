@@ -1,6 +1,8 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ldap3 import Server, Connection, ALL, SUBTREE
+from sqlmodel import Session, select
 from config import settings
+from models import Machine
 
 class LDAPService:
     def __init__(self):
@@ -38,12 +40,53 @@ class LDAPService:
             ]
         }
 
-    def get_ou_tree(self) -> Dict[str, Any]:
+    def get_ou_tree(self, session: Optional[Session] = None) -> Dict[str, Any]:
         """Returns the full OU structure."""
+        if settings.AGENT_ONLY:
+            return self._build_agent_tree(session)
+
         if settings.USE_MOCK_LDAP:
             return self.mock_structure
         
         return self._fetch_real_ad_structure()
+
+    def _build_agent_tree(self, session: Optional[Session]) -> Dict[str, Any]:
+        """Builds a virtual tree from registered agents."""
+        if not session:
+            return {"Error": {"type": "error", "name": "Database session required for Agent Only mode"}}
+            
+        machines = session.exec(select(Machine)).all()
+        
+        # Create a virtual root "Agents"
+        # Frontend expects a single root node object, not a dictionary of nodes
+        
+        children_nodes = []
+        for machine in machines:
+            # Use a fake DN for the machine
+            machine_dn = f"CN={machine.hostname},OU=Agents,DC=local"
+            # Use ID as string for key if needed, or DN
+            children_nodes.append({
+                "name": machine.hostname,
+                "type": "computer",
+                "id": str(machine.id), # Frontend uses ID for selection
+                "dn": machine_dn
+            })
+
+        root_node = {
+            "id": "DC=local",
+            "name": "Agent Network",
+            "type": "domain",
+            "children": [
+                {
+                    "id": "OU=Agents,DC=local",
+                    "name": "Registered Agents",
+                    "type": "ou",
+                    "children": children_nodes
+                }
+            ]
+        }
+            
+        return root_node
 
     def _fetch_real_ad_structure(self) -> Dict[str, Any]:
         """Connects to real AD and builds the tree."""

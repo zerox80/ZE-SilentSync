@@ -20,8 +20,8 @@ def create_software(software: Software, session: Session = Depends(get_session))
     return software
 
 @router.get("/ad/tree")
-def get_ad_tree():
-    return ldap_service.get_ou_tree()
+def get_ad_tree(session: Session = Depends(get_session)):
+    return ldap_service.get_ou_tree(session)
 
 @router.get("/machines", response_model=List[Machine])
 def get_machines(session: Session = Depends(get_session)):
