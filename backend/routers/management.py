@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
-from sqlmodel import Session, select
+from sqlmodel import Session, select, SQLModel
 from typing import List
 from database import get_session
 from auth import get_current_admin
