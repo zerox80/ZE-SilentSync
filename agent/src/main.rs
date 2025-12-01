@@ -135,12 +135,31 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
 
     info!("Download complete.");
 
-    // 2. Install
-    info!("Executing installer with args: {}", task.silent_args);
+    // 2. Install / Uninstall
+    let mut args: Vec<&str> = task.silent_args.split_whitespace().collect();
+    let mut command_path = file_path.clone();
     
-    let args: Vec<&str> = task.silent_args.split_whitespace().collect();
+    if task.task_type == "uninstall" {
+        info!("Executing UNINSTALL...");
+        if task.download_url.to_lowercase().ends_with(".msi") {
+            // For MSI, we use msiexec /x <file> /qn
+            // We need to construct the args manually
+            // args = vec!["/x", file_path.to_str().unwrap(), "/qn"]; 
+            // Wait, Command::new should be msiexec
+            command_path = std::path::PathBuf::from("msiexec");
+            args = vec!["/x", file_path.to_str().unwrap(), "/qn"];
+        } else {
+            // For EXE, we just run the downloaded file with args? 
+            // Usually uninstaller is a different file. 
+            // But maybe the user provided the uninstaller as the "software" file?
+            // Or maybe the installer has an /uninstall switch?
+            warn!("Uninstalling EXE is experimental. Running downloaded file with args.");
+        }
+    } else {
+        info!("Executing installer with args: {}", task.silent_args);
+    }
 
-    let status = Command::new(&file_path)
+    let status = Command::new(&command_path)
         .args(&args)
         .status();
 

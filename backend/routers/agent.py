@@ -58,6 +58,8 @@ def heartbeat(
     current_time = datetime.utcnow()
     tasks = []
     
+    print(f"DEBUG: Heartbeat for {hostname} (ID: {machine.id}). Checking deployments...")
+
     # 1. Get relevant deployments
     # Optimization: Filter by machine ID or OU type in SQL
     statement = select(Deployment).where(
@@ -65,6 +67,7 @@ def heartbeat(
         (Deployment.target_type == "ou")
     )
     potential_deployments = session.exec(statement).all()
+    print(f"DEBUG: Found {len(potential_deployments)} potential deployments.")
     
     from models import MachineSoftwareLink
 
@@ -84,24 +87,39 @@ def heartbeat(
             if machine_dn.endswith(target_dn):
                 if machine_dn == target_dn or machine_dn.endswith("," + target_dn):
                     is_target = True
-                
+        
+        if not is_target:
+            print(f"DEBUG: Dep {dep.id} skipped. Not target. (Type: {dep.target_type}, Val: {dep.target_value})")
+            continue
+
         if is_target:
             # Schedule Check
             if dep.schedule_start and current_time < dep.schedule_start:
+                print(f"DEBUG: Dep {dep.id} skipped. Schedule start future.")
                 continue
             if dep.schedule_end and current_time > dep.schedule_end:
+                print(f"DEBUG: Dep {dep.id} skipped. Schedule end passed.")
                 continue
                 
             # Software Check
             if dep.software:
-                # CHECK IF ALREADY INSTALLED
+                # CHECK IF ALREADY INSTALLED / UNINSTALLED
                 link = session.exec(select(MachineSoftwareLink).where(
                     (MachineSoftwareLink.machine_id == machine.id) &
                     (MachineSoftwareLink.software_id == dep.software_id)
                 )).first()
                 
-                if link and link.status == "installed":
-                    continue
+                # If Action is INSTALL
+                if dep.action == "install":
+                    if link and link.status == "installed":
+                        print(f"DEBUG: Dep {dep.id} skipped. Already installed.")
+                        continue
+                # If Action is UNINSTALL
+                elif dep.action == "uninstall":
+                    # If not installed, we can't uninstall (or we assume success)
+                    if not link or link.status != "installed":
+                        print(f"DEBUG: Dep {dep.id} skipped. Not installed, can't uninstall.")
+                        continue
 
                 download_url = dep.software.download_url
                 if download_url.startswith("/"):
@@ -111,13 +129,14 @@ def heartbeat(
 
                 tasks.append({
                     "id": dep.id,
-                    "type": "install",
+                    "type": dep.action, # install or uninstall
                     "software_name": dep.software.name,
                     "download_url": download_url,
                     "silent_args": dep.software.silent_args,
                     "is_msi": dep.software.is_msi
                 })
             
+    print(f"DEBUG: Returning {len(tasks)} tasks.")
     return {"status": "ok", "tasks": tasks}
 
 class AckRequest(BaseModel):
@@ -159,7 +178,10 @@ def acknowledge_task(
         session.add(link)
     
     if data.status == "success":
-        link.status = "installed"
+        if deployment.action == "uninstall":
+            link.status = "uninstalled" # or delete the link? Keeping it as history is better.
+        else:
+            link.status = "installed"
     else:
         link.status = "failed"
         

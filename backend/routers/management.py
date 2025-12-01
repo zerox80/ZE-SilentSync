@@ -28,7 +28,7 @@ def get_machines(session: Session = Depends(get_session)):
     return session.exec(select(Machine)).all()
 
 @router.post("/deploy")
-def create_deployment(software_id: int, target_dn: str, target_type: str, session: Session = Depends(get_session)):
+def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session)):
     # Logic to resolve target (OU or Machine) and create deployment records
     # For simplicity, we just create a Deployment record. 
     # In a real app, if target is OU, we might expand to all machines in that OU immediately or let a background task do it.
@@ -36,17 +36,18 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, sessio
     deployment = Deployment(
         software_id=software_id,
         target_value=target_dn,
-        target_type=target_type
+        target_type=target_type,
+        action=action
     )
     session.add(deployment)
     session.commit()
-    session.add(deployment)
-    session.commit()
+    session.refresh(deployment)
     return {"status": "deployment scheduled"}
 
 class BulkDeploymentRequest(SQLModel):
     software_ids: List[int]
     target_dns: List[str]
+    action: str = "install"
 
 @router.post("/deploy/bulk")
 def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session)):
@@ -59,7 +60,8 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             deployment = Deployment(
                 software_id=software_id,
                 target_value=target_dn,
-                target_type=target_type
+                target_type=target_type,
+                action=request.action
             )
             session.add(deployment)
             count += 1

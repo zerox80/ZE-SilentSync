@@ -58,6 +58,7 @@ class Deployment(SQLModel, table=True):
     
     target_type: str = Field(default="machine") # machine, ou, group
     target_value: str # machine_id or OU DN
+    action: str = Field(default="install") # install, uninstall
     
     schedule_start: Optional[datetime] = None
     schedule_end: Optional[datetime] = None

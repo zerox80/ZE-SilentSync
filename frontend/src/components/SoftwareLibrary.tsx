@@ -33,7 +33,7 @@ export default function SoftwareLibrary() {
         }
     }
 
-    const handleDeploy = async () => {
+    const handleDeploy = async (action: string = 'install') => {
         if (selected.length === 0) return;
 
         const savedTargets = localStorage.getItem('selectedTargets')
@@ -47,12 +47,14 @@ export default function SoftwareLibrary() {
         try {
             await api.post('/management/deploy/bulk', {
                 software_ids: selected,
-                target_dns: targets
+                target_dns: targets,
+                action: action
             })
-            alert(`Successfully scheduled ${selected.length} apps to ${targets.length} targets!`)
+            const verb = action === 'uninstall' ? 'uninstall' : 'deploy';
+            alert(`Successfully scheduled to ${verb} ${selected.length} apps on ${targets.length} targets!`)
             setSelected([])
         } catch (err) {
-            alert("Deployment failed! Check console.")
+            alert("Action failed! Check console.")
             console.error(err)
         }
     }
@@ -75,7 +77,14 @@ export default function SoftwareLibrary() {
                         Add Software
                     </button>
                     <button
-                        onClick={handleDeploy}
+                        onClick={() => handleDeploy('uninstall')}
+                        className="bg-red-600 hover:bg-red-500 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={selected.length === 0}
+                    >
+                        Uninstall
+                    </button>
+                    <button
+                        onClick={() => handleDeploy('install')}
                         className="bg-primary hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         disabled={selected.length === 0}
                     >
