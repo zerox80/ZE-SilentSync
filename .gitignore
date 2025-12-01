@@ -17,6 +17,9 @@ backend/.env
 backend/.pytest_cache/
 backend/coverage.xml
 backend/htmlcov/
+backend/uploads/
+*.msi
+*.exe
 
 # Node / Frontend
 frontend/node_modules/

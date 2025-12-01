@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
-import { Check, Package } from 'lucide-react'
+import { Check, Package, Plus } from 'lucide-react'
 import { api } from '../auth/AuthContext'
+import AddSoftwareModal from './AddSoftwareModal'
 
 export default function SoftwareLibrary() {
     const [selected, setSelected] = useState<number[]>([])
     const [software, setSoftware] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
+    const [isAddModalOpen, setIsAddModalOpen] = useState(false)
 
     useEffect(() => {
         fetchSoftware()
@@ -64,13 +66,22 @@ export default function SoftwareLibrary() {
                     <h2 className="text-3xl font-bold text-white">Software Library</h2>
                     <p className="text-gray-400 mt-1">Select applications to deploy to your fleet.</p>
                 </div>
-                <button
-                    onClick={handleDeploy}
-                    className="bg-primary hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    disabled={selected.length === 0}
-                >
-                    Deploy {selected.length} Apps
-                </button>
+                <div className="flex gap-3">
+                    <button
+                        onClick={() => setIsAddModalOpen(true)}
+                        className="bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-lg font-medium transition-colors flex items-center gap-2"
+                    >
+                        <Plus size={18} />
+                        Add Software
+                    </button>
+                    <button
+                        onClick={handleDeploy}
+                        className="bg-primary hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        disabled={selected.length === 0}
+                    >
+                        Deploy {selected.length} Apps
+                    </button>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
@@ -106,6 +117,12 @@ export default function SoftwareLibrary() {
                     </div>
                 ))}
             </div>
+
+            <AddSoftwareModal
+                isOpen={isAddModalOpen}
+                onClose={() => setIsAddModalOpen(false)}
+                onSuccess={fetchSoftware}
+            />
         </div>
     )
 }
