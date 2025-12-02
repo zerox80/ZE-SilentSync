@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import axios from 'axios';
 
 const API_URL = '/api/v1';
+axios.defaults.baseURL = API_URL;
 
 interface AuthContextType {
     token: string | null;
@@ -13,12 +14,13 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
-    const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
-
-    // Set base URL once
-    useEffect(() => {
-        axios.defaults.baseURL = API_URL;
-    }, []);
+    const [token, setToken] = useState<string | null>(() => {
+        const savedToken = localStorage.getItem('token');
+        if (savedToken) {
+            axios.defaults.headers.common['Authorization'] = `Bearer ${savedToken}`;
+        }
+        return savedToken;
+    });
 
     useEffect(() => {
         if (token) {
