@@ -16,7 +16,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
 
     // Set base URL once
-
+    useEffect(() => {
+        axios.defaults.baseURL = API_URL;
+    }, []);
 
     useEffect(() => {
         if (token) {
@@ -34,7 +36,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         formData.append('password', password);
 
         try {
-            const response = await axios.post(`${API_URL}/auth/token`, formData);
+            const response = await axios.post('/auth/token', formData);
             setToken(response.data.access_token);
         } catch (error) {
             console.error("Login failed", error);
