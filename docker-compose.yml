@@ -4,15 +4,15 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8000:8000"
+      - "192.168.1.123:8000:8000"
     volumes:
       - ./backend:/app
     environment:
-      - ALLOWED_ORIGINS=http://localhost:3000,http://192.168.1.125:3000
+      - ALLOWED_ORIGINS=http://localhost:3000,http://192.168.1.123:3000
 
   frontend:
     build: ./frontend
     ports:
-      - "192.168.1.125:3000:80"
+      - "192.168.1.123:3000:80"
     depends_on:
       - backend
