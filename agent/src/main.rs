@@ -128,6 +128,9 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     
     {
         let response = reqwest::get(&task.download_url).await?;
+        if !response.status().is_success() {
+             return Err(format!("Download failed with status: {}", response.status()).into());
+        }
         let mut file = File::create(&file_path)?;
         let content = response.bytes().await?;
         copy(&mut content.as_ref(), &mut file)?;
@@ -143,20 +146,23 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
         info!("Executing UNINSTALL...");
         if task.download_url.to_lowercase().ends_with(".msi") {
             // For MSI, we use msiexec /x <file> /qn
-            // We need to construct the args manually
-            // args = vec!["/x", file_path.to_str().unwrap(), "/qn"]; 
-            // Wait, Command::new should be msiexec
             command_path = std::path::PathBuf::from("msiexec");
             args = vec!["/x", file_path.to_str().unwrap(), "/qn"];
         } else {
-            // For EXE, we just run the downloaded file with args? 
-            // Usually uninstaller is a different file. 
-            // But maybe the user provided the uninstaller as the "software" file?
-            // Or maybe the installer has an /uninstall switch?
             warn!("Uninstalling EXE is experimental. Running downloaded file with args.");
         }
     } else {
+        // INSTALL
         info!("Executing installer with args: {}", task.silent_args);
+        if task.download_url.to_lowercase().ends_with(".msi") {
+             info!("Detected MSI installer. Using msiexec.");
+             command_path = std::path::PathBuf::from("msiexec");
+             // msiexec /i <file> <args>
+             // We need to construct a new args vector
+             let mut new_args = vec!["/i", file_path.to_str().unwrap()];
+             new_args.extend(args);
+             args = new_args;
+        }
     }
 
     let status = Command::new(&command_path)
