@@ -1,4 +1,4 @@
-import { useState, ReactNode } from 'react'
+import { ReactNode } from 'react'
 import { LayoutDashboard, AppWindow, Network, Send, LogOut } from 'lucide-react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import SoftwareLibrary from './components/SoftwareLibrary'
@@ -14,7 +14,7 @@ class ErrorBoundary extends React.Component<{ children: ReactNode }, { hasError:
         this.state = { hasError: false };
     }
 
-    static getDerivedStateFromError(error: any) {
+    static getDerivedStateFromError(_error: any) {
         return { hasError: true };
     }
 
