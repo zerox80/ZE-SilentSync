@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import get_session
 from models import Machine, Deployment, Software, AgentLog
 from auth import verify_agent_token
@@ -89,8 +89,19 @@ def heartbeat(
                  machine.ou_path = ou_path
             session.add(machine)
         
-        session.commit()
-        session.refresh(machine)
+        try:
+            session.commit()
+            session.refresh(machine)
+        except Exception as e:
+            # Handle potential race conditions (IntegrityError)
+            session.rollback()
+            # If it was a unique constraint violation (e.g. parallel heartbeat), 
+            # we can just ignore it for this heartbeat or fetch again.
+            print(f"WARNING: Database commit failed (likely race condition): {e}")
+            # Try to fetch fresh state to return tasks
+            machine = session.exec(select(Machine).where(Machine.mac_address == mac_address)).first()
+            if not machine:
+                 raise HTTPException(status_code=500, detail="Could not recover machine state after race condition")
         
         # --- Task Resolution Logic ---
         current_time = datetime.utcnow()
@@ -155,10 +166,16 @@ def heartbeat(
                     
                     # If Action is INSTALL
                     if dep.action == "install":
-                        # Stop infinite loops: Skip if installed OR failed
-                        if link and (link.status == "installed" or link.status == "failed"):
-                            # print(f"DEBUG: Dep {dep.id} skipped. Status: {link.status}")
-                            continue
+                        # Stop infinite loops: Skip if installed.
+                        # For FAILED, we should allow retry after some time (e.g., 1 hour)
+                        if link:
+                            if link.status == "installed":
+                                continue
+                            elif link.status == "failed":
+                                # Retry after 1 hour
+                                if datetime.utcnow() - link.last_updated < timedelta(hours=1):
+                                    continue
+                                # Else, fall through to retry
                     # If Action is UNINSTALL
                     elif dep.action == "uninstall":
                         # If not installed, we can't uninstall (or we assume success)
@@ -188,11 +205,8 @@ def heartbeat(
         import traceback
         error_msg = f"ERROR: Heartbeat failed for {data.hostname}: {e}\n{traceback.format_exc()}"
         print(error_msg)
-        try:
-            with open("agent_error.log", "a") as f:
-                f.write(f"{datetime.utcnow()} - {error_msg}\n")
-        except:
-            pass
+        # LOG TO STDOUT ONLY
+        pass
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 class AckRequest(BaseModel):

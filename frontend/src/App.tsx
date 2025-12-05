@@ -1,13 +1,47 @@
-import { useState } from 'react'
+import { useState, ReactNode } from 'react'
 import { LayoutDashboard, AppWindow, Network, Send, LogOut } from 'lucide-react'
+import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import SoftwareLibrary from './components/SoftwareLibrary'
 import DeploymentWizard from './components/DeploymentWizard'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './components/Login'
 
+// Error Boundary Component
+import React from 'react'
+class ErrorBoundary extends React.Component<{ children: ReactNode }, { hasError: boolean }> {
+    constructor(props: { children: ReactNode }) {
+        super(props);
+        this.state = { hasError: false };
+    }
+
+    static getDerivedStateFromError(error: any) {
+        return { hasError: true };
+    }
+
+    componentDidCatch(error: any, errorInfo: any) {
+        console.error("Uncaught error:", error, errorInfo);
+    }
+
+    render() {
+        if (this.state.hasError) {
+            return (
+                <div className="h-screen w-full flex items-center justify-center bg-dark text-white">
+                    <div className="text-center">
+                        <h1 className="text-3xl font-bold text-red-500 mb-4">Something went wrong.</h1>
+                        <button onClick={() => window.location.reload()} className="px-4 py-2 bg-primary rounded">Reload Page</button>
+                    </div>
+                </div>
+            );
+        }
+        return this.props.children;
+    }
+}
+
 function AppContent() {
-    const [activeTab, setActiveTab] = useState('library')
     const { isAuthenticated, logout } = useAuth()
+    const navigate = useNavigate()
+    const location = useLocation()
+    const currentPath = location.pathname
 
     if (!isAuthenticated) {
         return <Login />
@@ -25,26 +59,26 @@ function AppContent() {
 
                 <nav className="flex-1 px-4 space-y-2">
                     <NavButton
-                        active={activeTab === 'dashboard'}
-                        onClick={() => setActiveTab('dashboard')}
+                        active={currentPath === '/dashboard'}
+                        onClick={() => navigate('/dashboard')}
                         icon={<LayoutDashboard size={20} />}
                         label="Dashboard"
                     />
                     <NavButton
-                        active={activeTab === 'library'}
-                        onClick={() => setActiveTab('library')}
+                        active={currentPath === '/library' || currentPath === '/'}
+                        onClick={() => navigate('/library')}
                         icon={<AppWindow size={20} />}
                         label="Software Library"
                     />
                     <NavButton
-                        active={activeTab === 'targets'}
-                        onClick={() => setActiveTab('targets')}
+                        active={currentPath === '/targets'}
+                        onClick={() => navigate('/targets')}
                         icon={<Network size={20} />}
                         label="Targets (AD)"
                     />
                     <NavButton
-                        active={activeTab === 'deployments'}
-                        onClick={() => setActiveTab('deployments')}
+                        active={currentPath === '/deployments'}
+                        onClick={() => navigate('/deployments')}
                         icon={<Send size={20} />}
                         label="Deployments"
                     />
@@ -66,20 +100,25 @@ function AppContent() {
 
             {/* Main Content */}
             <main className="flex-1 overflow-auto p-8">
-                {activeTab === 'library' && <SoftwareLibrary />}
-                {activeTab === 'targets' && <DeploymentWizard />}
-                {activeTab === 'dashboard' && (
-                    <div className="text-center mt-20">
-                        <h2 className="text-3xl font-bold text-gray-700">Dashboard Placeholder</h2>
-                        <p className="text-gray-500 mt-2">Overview of installed software and machine status will go here.</p>
-                    </div>
-                )}
-                {activeTab === 'deployments' && (
-                    <div className="text-center mt-20">
-                        <h2 className="text-3xl font-bold text-gray-700">Deployments Placeholder</h2>
-                        <p className="text-gray-500 mt-2">History of deployments will go here.</p>
-                    </div>
-                )}
+                <ErrorBoundary>
+                    <Routes>
+                        <Route path="/" element={<SoftwareLibrary />} />
+                        <Route path="/library" element={<SoftwareLibrary />} />
+                        <Route path="/targets" element={<DeploymentWizard />} />
+                        <Route path="/dashboard" element={
+                            <div className="text-center mt-20">
+                                <h2 className="text-3xl font-bold text-gray-700">Dashboard Placeholder</h2>
+                                <p className="text-gray-500 mt-2">Overview of installed software and machine status will go here.</p>
+                            </div>
+                        } />
+                        <Route path="/deployments" element={
+                            <div className="text-center mt-20">
+                                <h2 className="text-3xl font-bold text-gray-700">Deployments Placeholder</h2>
+                                <p className="text-gray-500 mt-2">History of deployments will go here.</p>
+                            </div>
+                        } />
+                    </Routes>
+                </ErrorBoundary>
             </main>
         </div>
     )
@@ -87,13 +126,22 @@ function AppContent() {
 
 function App() {
     return (
-        <AuthProvider>
-            <AppContent />
-        </AuthProvider>
+        <BrowserRouter>
+            <AuthProvider>
+                <AppContent />
+            </AuthProvider>
+        </BrowserRouter>
     )
 }
 
-function NavButton({ active, onClick, icon, label }: any) {
+interface NavButtonProps {
+    active: boolean;
+    onClick: () => void;
+    icon: ReactNode;
+    label: string;
+}
+
+function NavButton({ active, onClick, icon, label }: NavButtonProps) {
     return (
         <button
             onClick={onClick}

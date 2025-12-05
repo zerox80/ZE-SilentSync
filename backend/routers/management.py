@@ -93,59 +93,33 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             
             # FORCE RE-INSTALL LOGIC
             if request.force_reinstall and request.action == "install":
-                # If we are forcing reinstall, we need to find any existing "installed" or "failed" links
-                # for machines covered by this target and reset them.
-                
-                # If target is a specific machine
+                # Efficiently reset links
                 if target_type == "machine":
-                    # target_value should be machine_id (as string) or we need to look it up?
-                    # In create_bulk_deployment, target_dn is passed. 
-                    # If it's a machine DN, we need to find the machine.
-                    # If it's a machine ID (from frontend logic?), let's check.
-                    # Frontend sends "target_dns" which are strings. 
-                    # If it's a machine, it might be the DN or ID. 
-                    # Let's assume for now the frontend sends DNs for OUs and ... what for machines?
-                    # Looking at frontend DeploymentWizard, it seems to select OUs. 
-                    # But if we look at agent.py, it matches by OU path.
+                     # For machine targets, target_dn is expected to be the machine ID or hostname. 
+                     # Ideally we should resolve this properly. Assuming it is an ID for simplicity as per frontend.
+                     try:
+                        machine_id = int(target_value)
+                        machines = [session.get(Machine, machine_id)]
+                     except ValueError:
+                        # Maybe it is a DN or Hostname?
+                        machines = session.exec(select(Machine).where(Machine.hostname == target_value)).all()
+                else: 
+                     # OU Target
+                     machines = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
+
+                for machine in machines:
+                    if not machine: continue
                     
-                    # If target is OU, we need to find all machines in that OU?
-                    # That's expensive to do here synchronously if there are many machines.
-                    # BUT, the Agent checks for the link status.
-                    # So if we just delete the link, the Agent will see "no link" -> "install".
-                    # OR if we update the link to "pending".
+                    link = session.exec(select(MachineSoftwareLink).where(
+                        (MachineSoftwareLink.machine_id == machine.id) &
+                        (MachineSoftwareLink.software_id == software_id)
+                    )).first()
                     
-                    # Strategy: We can't easily find all machines here without a query.
-                    # Let's try to find machines matching the target.
-                    
-                    machines_to_reset = []
-                    if target_type == "machine":
-                        # Assuming target_dn is actually a machine ID or we can find it.
-                        # If the user selects a machine in UI, what is passed?
-                        # The UI says "Targets (AD)". It seems to be OUs.
-                        pass 
-                    elif target_type == "ou":
-                        # Find all machines in this OU
-                        # This is a 'startswith' or 'endswith' match depending on how we store it.
-                        # Machine.ou_path
-                        # target_dn: "OU=Sales,DC=example,DC=com"
-                        # Machine.ou_path: "CN=PC1,OU=Sales,DC=example,DC=com"
-                        # So Machine.ou_path ENDS WITH target_dn
+                    if link:
+                        link.status = "pending"
+                        link.last_updated = datetime.utcnow()
+                        session.add(link)
                         
-                        machines = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
-                        machines_to_reset.extend(machines)
-                        
-                    for machine in machines_to_reset:
-                        link = session.exec(select(MachineSoftwareLink).where(
-                            (MachineSoftwareLink.machine_id == machine.id) &
-                            (MachineSoftwareLink.software_id == software_id)
-                        )).first()
-                        
-                        if link:
-                            # Reset status to pending so agent picks it up again
-                            link.status = "pending"
-                            link.last_updated = datetime.utcnow()
-                            session.add(link)
-                            
             count += 1
             
     session.commit()
@@ -168,6 +142,12 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
     
     if not filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
+
+    # Security: Validate extension
+    ALLOWED_EXTENSIONS = {'.msi', '.exe', '.zip', '.7z'}
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Invalid file extension. Only .msi, .exe, .zip, .7z are allowed.")
 
     file_path = os.path.join(UPLOAD_DIR, filename)
     with open(file_path, "wb") as buffer:
