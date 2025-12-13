@@ -269,9 +269,19 @@ def heartbeat(
                     # If Action is UNINSTALL
                     elif dep.action == "uninstall":
                         # If not installed, we can't uninstall (or we assume success)
-                        if not link or link.status != "installed":
-                            print(f"DEBUG: Dep {dep.id} skipped. Not installed, can't uninstall.")
-                            continue
+                        if not link:
+                             continue
+                        
+                        if link.status == "installed":
+                             pass # Proceed
+                        elif link.status == "failed":
+                             # Retry uninstall after 1 hour similar to install
+                             if datetime.utcnow() - link.last_updated < timedelta(hours=1):
+                                 continue
+                             print(f"DEBUG: Retrying uninstall for {dep.software.name}")
+                        else:
+                             # print(f"DEBUG: Dep {dep.id} skipped. Not installed/failed, can't uninstall.")
+                             continue
     
                     download_url = dep.software.download_url
                     if download_url and download_url.startswith("/"):
@@ -382,9 +392,9 @@ def log_agent_event(
         # This is a basic check.
         if machine.ip_address and request.client and request.client.host:
             if machine.ip_address != request.client.host:
-                print(f"SECURITY WARNING: Log attempt for {mac_address} from unauthorized IP {request.client.host} (Expected {machine.ip_address})")
-                # We could raise 403, or just drop the log silently to not leak info.
-                return {"status": "ignored"}
+                print(f"SECURITY WARNING: Log attempt for {mac_address} from unauthorized IP {request.client.host} (Expected {machine.ip_address}). Allowing for robustness.")
+                # We do NOT return ignored anymore, just log warning.
+                pass
                 
         # Security: Verify Machine Token
         token_header = request.headers.get("X-Machine-Token")

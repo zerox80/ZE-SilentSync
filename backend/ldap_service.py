@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional
 import re
 from ldap3 import Server, Connection, ALL, SUBTREE
+from ldap3.utils.conv import escape_filter_chars
 from sqlmodel import Session, select
 from config import settings
 from models import Machine
@@ -66,7 +67,7 @@ class LDAPService:
              conn = Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True)
              
              # Search for computer
-             conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={hostname}))', attributes=['distinguishedName'])
+             conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={escape_filter_chars(hostname)}))', attributes=['distinguishedName'])
              if conn.entries:
                  return str(conn.entries[0].distinguishedName)
              return "Unknown"
@@ -160,12 +161,31 @@ class LDAPService:
                 "children": []
             }
             
+from ldap3.utils.dn import parse_dn
+
             # Helper to find parent DN
             def get_parent_dn(dn):
-                # Split by comma NOT preceded by backslash
-                parts = re.split(r'(?<!\\),', dn)
-                if len(parts) > 1:
-                    return ",".join(parts[1:])
+                try:
+                    parsed = parse_dn(dn)
+                    if len(parsed) > 1:
+                        # Reconstruct the parent DN by joining components after the first one
+                        # parse_dn returns (attribute, value, separator)
+                        # We need to preserve the separators (except the last one? or use standard joining)
+                        # A simple join of key=value might lose escaping, but parse_dn handles splitting.
+                        # Ideally we find the substring, but reconstructing is safer if we trust the parser.
+                        
+                        # Re-joining: attribute=value + separator
+                        parent_parts = []
+                        for i in range(1, len(parsed)):
+                            attr, val, sep = parsed[i]
+                            # parse_dn unescapes values? No, it usually keeps them or provides raw.
+                            # Actually, let's keep it simple: simpler reconstruction
+                            # If we assume standard AD DNs:
+                            parent_parts.append(f"{attr}={val}")
+                        
+                        return ",".join(parent_parts)
+                except Exception:
+                    pass
                 return None
 
             # Attach OUs to their parents

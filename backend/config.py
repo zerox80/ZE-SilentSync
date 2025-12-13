@@ -31,8 +31,13 @@ class Settings:
 
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
-            import secrets
-            self.AGENT_TOKEN = secrets.token_urlsafe(32)
-            print("WARNING: AGENT_TOKEN not set. Generated a random secure token.")
+            if self.USE_MOCK_LDAP:
+                import secrets
+                self.AGENT_TOKEN = secrets.token_urlsafe(32)
+                print(f"WARNING: AGENT_TOKEN not set. Generated a random secure token: {self.AGENT_TOKEN}")
+                print("Please set AGENT_TOKEN in your .env file for persistence.")
+            else:
+                # Fail in production if not set to prevent connectivity loss on restart
+                raise ValueError("AGENT_TOKEN must be set in production mode! Agents will lose connectivity on restart otherwise.")
 
 settings = Settings()

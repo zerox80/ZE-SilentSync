@@ -5,6 +5,8 @@ use std::fs::File;
 use std::io::copy;
 use log::{info, error, warn};
 use config::Config;
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 
 #[derive(Serialize, Deserialize, Debug)]
 struct AgentConfig {
@@ -60,9 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let sys_info = get_system_info();
         info!("Sending heartbeat for {}", sys_info.hostname);
 
-        match client.post(format!("{}/heartbeat", config.backend_url))
-            .header("X-Agent-Token", &config.auth_token)
-            .json(&sys_info)
+        let mut req = client.post(format!("{}/heartbeat", config.backend_url))
+            .header("X-Agent-Token", &config.auth_token);
+
+        if let Some(token) = &machine_token {
+            req = req.header("X-Machine-Token", token);
+        }
+
+        match req.json(&sys_info)
             .send()
             .await 
         {
@@ -145,6 +152,14 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
         let mut file = File::create(&file_path)?;
         let content = response.bytes().await?;
         copy(&mut content.as_ref(), &mut file)?;
+        
+        #[cfg(target_os = "linux")]
+        {
+            let mut perms = file.metadata()?.permissions();
+            perms.set_mode(0o755);
+            file.set_permissions(perms)?;
+            info!("Set executable permissions for {:?}", file_path);
+        }
     }
 
     info!("Download complete.");
@@ -191,7 +206,7 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
             }
         },
         Err(e) => {
-            if cfg!(target_os = "linux") && file_name.ends_with(".exe") {
+            if cfg!(target_os = "linux") && file_name.to_lowercase().ends_with(".exe") {
                  warn!("Cannot run .exe on Linux. Simulating success for verification.");
                  ("success", "Simulated success on Linux".to_string())
             } else {

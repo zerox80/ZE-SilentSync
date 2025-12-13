@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 import asyncio
+import re
 from sqlmodel import Session, select, SQLModel
 from typing import List
 from database import get_session
@@ -50,6 +51,29 @@ def delete_software(software_id: int, session: Session = Depends(get_session)):
     for dep in dependencies:
         session.delete(dep)
 
+    # Delete the actual file from disk
+    import os
+    if software.download_url:
+        # Check if it is a local file (starts with /static/)
+        if software.download_url.startswith("/static/"):
+            filename = os.path.basename(software.download_url)
+            # Security: Ensure we only delete from our uploads folder
+            # Verify filename doesn't have path traversal attempts (though basename helps)
+            safe_filename = os.path.basename(filename)
+            file_path = os.path.join("uploads", safe_filename)
+            
+            if os.path.exists(file_path):
+                # Double check to prevent deleting something not meant to be deleted
+                # (Simple check: is it a file?)
+                if os.path.isfile(file_path):
+                    try:
+                        os.remove(file_path)
+                        print(f"Deleted file: {file_path}")
+                    except Exception as e:
+                        print(f"Error deleting file {file_path}: {e}")
+        else:
+            print(f"Skipping file deletion for external URL: {software.download_url}")
+
     session.delete(software)
     session.commit()
     return {"status": "deleted", "id": software_id}
@@ -64,6 +88,8 @@ def get_machines(session: Session = Depends(get_session)):
 
 @router.post("/deploy")
 def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session)):
+    if not target_dn or not target_dn.strip():
+        raise HTTPException(status_code=400, detail="Target DN cannot be empty")
     # Logic to resolve target (OU or Machine) and create deployment records
     # For simplicity, we just create a Deployment record. 
     # In a real app, if target is OU, we might expand to all machines in that OU immediately or let a background task do it.
@@ -90,19 +116,31 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
     count = 0
     for software_id in request.software_ids:
         for target_dn in request.target_dns:
+            if not target_dn or not target_dn.strip():
+                print("Skipping empty target_dn")
+                continue
+
             # Simple heuristic for target type, similar to frontend
             # OUs start with OU= or DC=, Machines start with CN= (usually)
             # Improved heuristic: OUs explicitly start with OU= or DC=, but we must be careful.
             # Computers often start with CN=...OU=...
             # If it starts with OU= or DC=, it is likely an OU root.
-            # If it starts with CN=, it is a machine.
+            # If it starts with CN=, it is likely a machine (or a container, but we prioritize machine).
+
+            # Improved heuristic for target type
             target_upper = target_dn.strip().upper()
-            if target_upper.startswith("CN="):
+            
+            if target_dn.strip().isdigit():
+                 target_type = "machine"
+            elif target_upper.startswith("CN="):
+                # Critical Fix: CN=... is almost always a machine object in our context or a specific object.
+                # Previously we checked DB, but if it's a new machine not yet in DB, we still want to treat it as "machine" type
+                # so the Agent correctly matches it by hostname/CN.
                 target_type = "machine"
             elif target_upper.startswith(("OU=", "DC=")):
                 target_type = "ou"
             else:
-                # Fallback to simple machine ID (integer) assumption if no DN structure
+                # Fallback
                  target_type = "machine"
             
             deployment = Deployment(
@@ -113,8 +151,8 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             )
             session.add(deployment)
             
-            # FORCE RE-INSTALL LOGIC
-            if request.force_reinstall and request.action == "install":
+            # FORCE RE-INSTALL / RETRY LOGIC
+            if request.force_reinstall:
                 # Efficiently reset links
                 machines = []
                 if target_type == "machine":
@@ -131,11 +169,13 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                         hostname_candidate = target_dn
                         if target_dn.upper().strip().startswith("CN="):
                             # Extract CN value: CN=Hostname,OU=...
-                            parts = target_dn.split(",")
+                            # Improved splitting to handle escaped commas
+                            parts = re.split(r'(?<!\\),', target_dn)
                             if parts:
                                 kv = parts[0].split("=")
                                 if len(kv) == 2:
-                                    hostname_candidate = kv[1]
+                                    # Fix: Unescape the hostname (remove backslashes before commas)
+                                    hostname_candidate = kv[1].replace(r'\,', ',')
                         
                         machines = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
                         if not machines and hostname_candidate != target_dn:
@@ -166,7 +206,12 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                     )).first()
                     
                     if link:
-                        link.status = "pending"
+                        if request.action == "install":
+                            link.status = "pending"
+                        elif request.action == "uninstall":
+                             # Reset to installed so agent attempts uninstall again
+                             link.status = "installed"
+                        
                         link.last_updated = datetime.utcnow()
                         session.add(link)
                         
@@ -194,10 +239,11 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
         raise HTTPException(status_code=400, detail="Invalid filename")
 
     # Security: Validate extension
-    ALLOWED_EXTENSIONS = {'.msi', '.exe', '.zip', '.7z'}
+    # Fix: Agent only supports .msi and .exe directly. Archives (.zip, .7z) cause crashes.
+    ALLOWED_EXTENSIONS = {'.msi', '.exe'}
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Invalid file extension. Only .msi, .exe, .zip, .7z are allowed.")
+        raise HTTPException(status_code=400, detail="Invalid file extension. Only .msi, .exe are allowed.")
 
     file_path = os.path.join(UPLOAD_DIR, filename)
     
