@@ -80,7 +80,8 @@ class LDAPService:
         """Finds the DN for a given hostname."""
         if settings.AGENT_ONLY:
             # Fix: Use dynamic root matching configured base DN or fallback
-            return f"CN={hostname},OU=Agents,{settings.AD_BASE_DN}"
+            from ldap3.utils.dn import escape_dn_chars
+            return f"CN={escape_dn_chars(hostname)},OU=Agents,{settings.AD_BASE_DN}"
             
         if settings.USE_MOCK_LDAP:
             # Search in mock structure
@@ -133,7 +134,8 @@ class LDAPService:
         children_nodes = []
         for machine in machines:
             # Fix: Use configured Root
-            machine_dn = f"CN={machine.hostname},OU=Agents,{root_dn}"
+            from ldap3.utils.dn import escape_dn_chars
+            machine_dn = f"CN={escape_dn_chars(machine.hostname)},OU=Agents,{root_dn}"
             # Use ID as string for key if needed, or DN
             children_nodes.append({
                 "name": machine.hostname,

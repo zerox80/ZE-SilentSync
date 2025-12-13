@@ -53,8 +53,13 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         )
         return {"access_token": access_token, "token_type": "bearer"}
     elif ldap_status == "INVALID_CREDENTIALS":
-        # Do not raise immediately. Fall through to check if it's a local-only admin.
-        pass
+        # Security Fix: If LDAP denies explicit credentials, do NOT fall back to local DB.
+        # This prevents using old cached passwords if the user is still in AD but password changed.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password (LDAP)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     # If "NOT_FOUND" or "ERROR", fall through to DB Check
     # This allows local-only admins (NOT_FOUND in AD) to login.
     # And allows cached login if AD is down (ERROR).

@@ -9,12 +9,12 @@ import re
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"], dependencies=[Depends(verify_agent_token)])
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class HeartbeatRequest(BaseModel):
-    hostname: str
-    mac_address: str
-    os_info: str
+    hostname: str = Field(..., max_length=255)
+    mac_address: str = Field(..., max_length=17)
+    os_info: str = Field(..., max_length=100)
 
 @router.post("/heartbeat")
 def heartbeat(
@@ -125,9 +125,10 @@ def heartbeat(
                  machine.ip_address = request.client.host
             else:
                  # Fallback for some proxies (but risky)
-                 forwarded = request.headers.get("x-forwarded-for")
-                 if forwarded:
-                      machine.ip_address = forwarded.split(",")[0].strip()
+                 if settings.TRUST_PROXY_HEADERS:
+                     forwarded = request.headers.get("x-forwarded-for")
+                     if forwarded:
+                          machine.ip_address = forwarded.split(",")[0].strip()
                  
             # Fix: Always update OU path to keep it fresh from AD/Logic
             machine.ou_path = ou_path
@@ -461,9 +462,9 @@ def acknowledge_task(
 
 
 class LogRequest(BaseModel):
-    mac_address: str
+    mac_address: str = Field(..., max_length=17)
     level: str  # INFO, WARN, ERROR
-    message: str
+    message: str = Field(..., max_length=2000)
 
 @router.post("/log")
 def log_agent_event(
@@ -509,7 +510,7 @@ def log_agent_event(
         # Extract scalar
         log_count = log_count_res if isinstance(log_count_res, int) else log_count_res[0] if log_count_res else 0
         
-        if log_count > 60:
+        if log_count >= 60:
             print(f"Rate Limit Exceeded for {machine.hostname}")
             raise HTTPException(status_code=429, detail="Rate limit exceeded")
 

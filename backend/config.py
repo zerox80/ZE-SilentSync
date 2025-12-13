@@ -16,6 +16,7 @@ class Settings:
     ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
     BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+    TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "False").lower() == "true"
 
     def __init__(self):
         # Fix: Load from .env first, then secrets file fallback
@@ -61,7 +62,7 @@ class Settings:
                                 target_type = type(current_val)
                                 
                                 if target_type == bool:
-                                    v_typed = v.lower() == "true"
+                                    v_typed = v.lower() in ("true", "1", "yes", "on")
                                 elif target_type == int:
                                     try:
                                         v_typed = int(v)
