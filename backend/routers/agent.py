@@ -94,6 +94,7 @@ def heartbeat(
                      print(f"SECURITY ALERT: Invalid Machine Token for heartbeat from {mac_address}")
                      raise HTTPException(status_code=403, detail="Invalid Machine Token")
 
+            machine_by_host = None  # Initialize to avoid NameError
             if machine.hostname != hostname:
                 # Hostname changed. Check if new hostname is already taken.
                 statement_host = select(Machine).where(Machine.hostname == hostname)

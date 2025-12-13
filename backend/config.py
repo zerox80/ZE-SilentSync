@@ -1,8 +1,31 @@
 import os
+import sys
 import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Cross-platform file locking helper
+def _lock_file(f, exclusive=True):
+    """Lock a file in a cross-platform way."""
+    if sys.platform == 'win32':
+        import msvcrt
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK if exclusive else msvcrt.LK_NBLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+def _unlock_file(f):
+    """Unlock a file in a cross-platform way."""
+    if sys.platform == 'win32':
+        import msvcrt
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except Exception:
+            pass  # Ignore unlock errors on Windows
+    else:
+        import fcntl
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 class Settings:
     AD_SERVER = os.getenv("AD_SERVER", "localhost")
@@ -55,47 +78,50 @@ class Settings:
         """Load secrets from a dedicated persistence file."""
         try:
             if os.path.exists("secrets.env"):
-                import fcntl
                 with open("secrets.env", "r") as f:
-                    fcntl.flock(f, fcntl.LOCK_SH)
-                    # Loop over lines
-                    for line in f:
-                        if "=" in line:
-                            k, v = line.strip().split("=", 1)
-                            # Fix: Do not mutate global os.environ
-                            # if k not in os.environ:
-                            #    os.environ[k] = v
-                            
-                            # Also update self if it maps to a property, respecting type
-                            if hasattr(self, k):
-                                current_val = getattr(self, k)
-                                target_type = type(current_val)
+                    _lock_file(f, exclusive=False)
+                    try:
+                        # Loop over lines
+                        for line in f:
+                            if "=" in line:
+                                k, v = line.strip().split("=", 1)
+                                # Fix: Do not mutate global os.environ
+                                # if k not in os.environ:
+                                #    os.environ[k] = v
                                 
-                                if target_type == bool:
-                                    v_typed = v.lower() in ("true", "1", "yes", "on")
-                                elif target_type == int:
-                                    try:
-                                        v_typed = int(v)
-                                    except ValueError:
+                                # Also update self if it maps to a property, respecting type
+                                if hasattr(self, k):
+                                    current_val = getattr(self, k)
+                                    # Fix: Handle None values - treat as string type
+                                    if current_val is None:
                                         v_typed = v
-                                else:
-                                    v_typed = v
-                                    
-                                setattr(self, k, v_typed)
+                                    else:
+                                        target_type = type(current_val)
+                                        
+                                        if target_type == bool:
+                                            v_typed = v.lower() in ("true", "1", "yes", "on")
+                                        elif target_type == int:
+                                            try:
+                                                v_typed = int(v)
+                                            except ValueError:
+                                                v_typed = v
+                                        else:
+                                            v_typed = v
+                                        
+                                    setattr(self, k, v_typed)
+                    finally:
+                        _unlock_file(f)
         except Exception as e:
             print(f"Failed to load secrets.env: {e}")
 
     def _save_secret(self, key, value):
         """Persist secret to both .env and secrets.env for redundancy"""
-        # Fix: Use file locking to prevent race conditions
-        import fcntl
-        
         for filepath in [".env", "secrets.env"]:
             try:
                 # Open in append mode, but we need a lock. 
                 # We open with 'a+' to read/write/append
                 with open(filepath, "a+") as f:
-                    fcntl.flock(f, fcntl.LOCK_EX)
+                    _lock_file(f, exclusive=True)
                     try:
                         # Check if key exists already to avoid duplicates?
                         # It's expensive to read all. We just append. 
@@ -111,7 +137,7 @@ class Settings:
                             f.write("\n")
                         f.write(f"{key}={value}\n")
                     finally:
-                        fcntl.flock(f, fcntl.LOCK_UN)
+                        _unlock_file(f)
             except Exception as e:
                 print(f"Failed to save {key} to {filepath}: {e}")
 

@@ -6,7 +6,7 @@ from typing import List
 from database import get_session
 from auth import get_current_admin
 from models import Software, Deployment, Machine, Admin, MachineSoftwareLink, SoftwareDependency, AuditLog
-from datetime import datetime
+from datetime import datetime, timezone
 from ldap_service import ldap_service
 
 router = APIRouter(prefix="/api/v1/management", tags=["management"], dependencies=[Depends(get_current_admin)])
@@ -345,7 +345,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 elif request.action == "uninstall":
                     link.status = "pending" # pending uninstall. Agent logic must be updated to handle this. 
                 
-                link.last_updated = datetime.utcnow()
+                link.last_updated = datetime.now(timezone.utc)
                 session.add(link)
                 # If existing, we updated it.
                 count += 1
@@ -355,7 +355,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                      machine_id=m_id,
                      software_id=sid,
                      status="pending" if request.action == "install" else "unknown",
-                     last_updated=datetime.utcnow()
+                     last_updated=datetime.now(timezone.utc)
                  )
                 session.add(new_link)
                 count += 1
