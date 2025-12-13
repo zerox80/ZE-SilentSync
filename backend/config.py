@@ -45,8 +45,21 @@ class Settings:
                 
     def _append_to_env(self, key, value):
         try:
+            # Fix: Ensure we don't corrupt the file if it doesn't end with a newline
+            prefix = ""
+            if os.path.exists(".env"):
+                with open(".env", "rb") as f:
+                    try:
+                        f.seek(-1, os.SEEK_END)
+                        last_char = f.read(1)
+                        if last_char != b"\n":
+                            prefix = "\n"
+                    except OSError:
+                        # Empty file or other issue
+                        pass
+
             with open(".env", "a") as f:
-                f.write(f"\n{key}={value}\n")
+                f.write(f"{prefix}{key}={value}\n")
         except Exception as e:
             print(f"Failed to save {key} to .env: {e}")
 

@@ -162,69 +162,36 @@ class BulkDeploymentRequest(SQLModel):
 
 @router.post("/deploy/bulk")
 def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
-    count = 0
-    
     # Fix: Validate all software IDs first
     for sid in request.software_ids:
         if not session.get(Software, sid):
              raise HTTPException(status_code=400, detail=f"Software ID {sid} not found")
-             
-    for software_id in request.software_ids:
-        for target_dn in request.target_dns:
-            if not target_dn or not target_dn.strip():
-                print("Skipping empty target_dn")
-                continue
 
-            # Simple heuristic for target type, similar to frontend
-            # OUs start with OU= or DC=, Machines start with CN= (usually)
-            # Improved heuristic: OUs explicitly start with OU= or DC=, but we must be careful.
-            # Computers often start with CN=...OU=...
-            # If it starts with OU= or DC=, it is likely an OU root.
-            # If it starts with CN=, it is likely a machine (or a container, but we prioritize machine).
+    # 1. Resolve all target machines once
+    machines_dict = {} # Use dict for uniqueness by ID: {id: Machine}
 
-            # Improved heuristic for target type
-            target_upper = target_dn.strip().upper()
-            
-            if target_dn.strip().isdigit():
+    for target_dn in request.target_dns:
+        if not target_dn or not target_dn.strip():
+            continue
+
+        # Heuristic for target type
+        target_upper = target_dn.strip().upper()
+        target_type = "machine" # default fallback
+        
+        if target_dn.strip().isdigit():
+             target_type = "machine"
+        elif target_upper.startswith("CN="):
+            # Check if machine exists with this DN or Hostname
+            machine_chk = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn) | (Machine.hostname == target_dn))).first()
+            if machine_chk:
                  target_type = "machine"
-            elif target_upper.startswith("CN="):
-                # Improved Heuristic for Bug 3:
-                # CN=... can be a machine (CN=Hostname) OR a container (CN=Computers).
-                # We default to 'ou' (container) UNLESS it matches a simple hostname convention 
-                # or we want to be explicit. But without DB lookup, it's ambiguous.
-                # However, machines are usually targeted by ID or plain Hostname in this app.
-                # If a DN is passed, it's likely dragging/dropping an object.
-                # If we assume 'machine' for CN=..., we break 'CN=Computers'.
-                
-                # Check if it looks like a machine specific DN (e.g. child of Agents or ends with specific pattern?)
-                # For now, safe default for bulk deploy via DN is arguably 'ou' because 'machine' 
-                # usually requires ID or pure hostname in other contexts? 
-                # Actually, the frontend might send DN for machines.
-                # Let's use a regex or check if comma is present?
-                # Machines usually are leaf nodes. Containers have children.
-                # "CN=Computers,DC=example..."
-                # "CN=PC1,OU=Sales..."
-                # Both look similar.
-                
-                # Let's try to detect if it's a known container or assume 'machine' only if NO better match?
-                # Or, we can change the logic to: check if machine exists?
-                # We can't check DB efficiently for every item in bulk if list is huge, but it's okay here.
-                
-                 # Check if machine exists with this DN
-                machine_chk = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn) | (Machine.hostname == target_dn))).first()
-                if machine_chk:
-                     # It's a machine if we found one
-                     target_type = "machine"
-                else:
-                    # Treat as OU/Group (Container)
-                    target_type = "ou"
-                    
-            elif target_upper.startswith(("OU=", "DC=")):
-                target_type = "ou"
             else:
-                # Fallback (Plain hostname or ID)
-                 target_type = "machine"
-            
+                target_type = "ou"
+        elif target_upper.startswith(("OU=", "DC=")):
+            target_type = "ou"
+
+        # Create Deployment Records (one per Soft x Target combo)
+        for software_id in request.software_ids:
             deployment = Deployment(
                 software_id=software_id,
                 target_value=target_dn,
@@ -233,82 +200,86 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 created_by=admin.id
             )
             session.add(deployment)
-            
-            # FORCE RE-INSTALL / RETRY LOGIC
-            if request.force_reinstall:
-                # Efficiently reset links
-                machines = []
-                if target_type == "machine":
-                     # For machine targets, target_dn is expected to be the machine ID or hostname. 
-                     try:
-                        machine_id = int(target_dn)
-                        found = session.get(Machine, machine_id)
-                        if found:
-                             machines = [found]
-                     except ValueError:
-                        # Maybe it is a DN or Hostname?
-                        # Try to match hostname directly or extract from CN=...
-                        try:
-                            hostname_candidate = target_dn
-                            if target_dn.upper().strip().startswith("CN="):
-                                # Extract CN value: CN=Hostname,OU=...
-                                # Improved splitting to handle escaped commas
-                                parts = re.split(r'(?<!\\),', target_dn)
-                                if parts:
-                                    kv = parts[0].split("=", 1)
-                                    if len(kv) == 2:
-                                        # Fix: Unescape the hostname (remove backslashes before commas)
-                                        hostname_candidate = kv[1].replace(r'\,', ',')
-                            
-                            machines = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
-                            if not machines and hostname_candidate != target_dn:
-                                 # Try raw match
-                                 machines = session.exec(select(Machine).where(Machine.hostname == target_dn)).all()
-                        except Exception as hostname_err:
-                            print(f"WARNING: Could not resolve machine hostname: {hostname_err}")
-                            machines = []
-                else: 
-                     # OU Target matches if it ends with the DN, but we must ensure it's a component boundary.
-                     # e.g. "OU=Sales" matches "...CN=PC1,OU=Sales" but NOT "...OU=PreSales"
-                     # Simple check: Ends with ",target_dn" OR is exactly "target_dn"
-                     machines = []
-                     # We can't easily do this purely in SQL with 'endswith' correctly without regex support in DB.
-                     # So we fetch potential matches and filter in python OR assume users provide valid DNs.
-                     # Let's try a slightly safer SQL approach if possible, or just strict suffix check.
-                     # Assuming basic structure:
-                     
-                     # Fetch all machines (or filter roughly)
-                     candidates = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
-                     for m in candidates:
-                         if m.ou_path == target_dn or m.ou_path.endswith("," + target_dn):
-                             machines.append(m)
+        
+        # Resolve Machines for Link Updates
+        found_machines = []
+        if target_type == "machine":
+             try:
+                machine_id = int(target_dn)
+                found = session.get(Machine, machine_id)
+                if found: found_machines.append(found)
+             except ValueError:
+                # Try Hostname match (CN=...)
+                hostname_candidate = target_dn
+                if target_upper.startswith("CN="):
+                    parts = re.split(r'(?<!\\),', target_dn)
+                    if parts:
+                        kv = parts[0].split("=", 1)
+                        if len(kv) == 2:
+                            hostname_candidate = kv[1].replace(r'\,', ',')
+                
+                ms = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
+                if not ms and hostname_candidate != target_dn:
+                     ms = session.exec(select(Machine).where(Machine.hostname == target_dn)).all()
+                found_machines.extend(ms)
 
-                for machine in machines:
-                    if not machine: continue
-                    
-                    link = session.exec(select(MachineSoftwareLink).where(
-                        (MachineSoftwareLink.machine_id == machine.id) &
-                        (MachineSoftwareLink.software_id == software_id)
-                    )).first()
-                    
-                    if link:
-                        if request.action == "install":
-                            link.status = "pending"
-                        elif request.action == "uninstall":
-                             # Reset to installed so agent attempts uninstall again
-                             link.status = "installed"
-                        
-                        link.last_updated = datetime.utcnow()
-                        session.add(link)
-                        
-            count += 1
+        else: # target_type == "ou"
+             # Fetch all machines in this OU (recursive suffix check)
+             candidates = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
+             for m in candidates:
+                 if m.ou_path == target_dn or m.ou_path.endswith("," + target_dn):
+                     found_machines.append(m)
+
+        for m in found_machines:
+            machines_dict[m.id] = m
+
+    # 2. Bulk Update/Create Links (Fix N+1)
+    if not machines_dict:
+        session.commit()
+        return {"status": "bulk deployment scheduled", "count": 0}
+
+    all_machine_ids = list(machines_dict.keys())
     
+    # Fetch existing links for (Any Machine in List) AND (Any Software in Request)
+    existing_links = session.exec(select(MachineSoftwareLink).where(
+        (MachineSoftwareLink.machine_id.in_(all_machine_ids)) & 
+        (MachineSoftwareLink.software_id.in_(request.software_ids))
+    )).all()
+    
+    link_map = {(l.machine_id, l.software_id): l for l in existing_links}
+    
+    count = 0
+    for m_id, machine in machines_dict.items():
+        for sid in request.software_ids:
+            link = link_map.get((m_id, sid))
+            
+            if link:
+                if request.action == "install":
+                    link.status = "pending"
+                elif request.action == "uninstall":
+                    link.status = "installed" 
+                
+                link.last_updated = datetime.utcnow()
+                session.add(link)
+                # If existing, we updated it.
+                count += 1
+            else:
+                # Link does not exist. Create it!
+                new_link = MachineSoftwareLink(
+                     machine_id=m_id,
+                     software_id=sid,
+                     status="pending" if request.action == "install" else "unknown",
+                     last_updated=datetime.utcnow()
+                 )
+                session.add(new_link)
+                count += 1
+
     # Audit Log
     session.add(AuditLog(
         admin_id=admin.id,
         action="create_bulk_deployment",
         target=f"{len(request.target_dns)} targets",
-        details=f"Software IDs: {request.software_ids}, Count: {count}",
+        details=f"Software IDs: {request.software_ids}, Machines Affected: {len(machines_dict)} ({count} links)",
         level="INFO"
     ))
             
@@ -351,11 +322,33 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
         file_path = os.path.join(UPLOAD_DIR, filename)
     
     # Run blocking I/O in a worker thread and ensure the target file handle is closed.
-    def _write_upload():
+    # Fix: Limit upload size to prevent DoS (e.g., 500MB)
+    MAX_FILE_SIZE = 500 * 1024 * 1024
+    
+    async def _write_upload():
+        size = 0
         with open(file_path, "wb") as out_file:
-            shutil.copyfileobj(file.file, out_file)
+            while True:
+                chunk = await file.read(1024 * 1024) # 1MB chunks
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_FILE_SIZE:
+                     # Clean up
+                     out_file.close() # Ensure close before remove
+                     os.remove(file_path)
+                     raise HTTPException(status_code=413, detail="File too large (Max 500MB)")
+                out_file.write(chunk)
 
-    await asyncio.to_thread(_write_upload)
+    try:
+        await _write_upload()
+    except HTTPException:
+        raise
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        print(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail="Upload failed")
         
     # Return the URL where it can be accessed
     # In production, this should be a full URL or relative to a configured base

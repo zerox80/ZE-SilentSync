@@ -43,10 +43,48 @@ class LDAPService:
             ]
         }
 
+    def verify_user(self, username, password):
+        """Verifies credentials against AD."""
+        if settings.USE_MOCK_LDAP:
+            # Mock Auth
+            return True # In mock mode, any password works for 'admin' usually, or check specifically
+            
+        try:
+             # Fix: Use AD_SERVER and bind with the user's credentials
+             # Note: username might need domain prefix/suffix depending on AD setup
+             # Try binding with the provided credentials directly
+             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
+             
+             # Try simple bind (assuming username is UPN or DN, or we might need to find DN first)
+             # A common pattern is to bind with service account, find user DN, then re-bind.
+             # But let's try assuming UPN or DOMAIN\User format if provided, or append domain.
+             # Limit risk: just try to bind.
+             user_dn = username
+             if "@" not in username and "\\" not in username:
+                 # Attempt to construct UPN if plain username
+                 # user_dn = f"{username}@{settings.AD_USER.split('@')[-1]}" # simplistic
+                 pass
+                 
+             # Better: Connect with service account, search for user DN, then bind.
+             with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
+                 conn.search(settings.AD_BASE_DN, f'(&(objectClass=user)(sAMAccountName={escape_filter_chars(username)}))', attributes=['distinguishedName'])
+                 if not conn.entries:
+                     return False
+                 user_dn = str(conn.entries[0].distinguishedName)
+                 
+             # Verify password by binding as that user
+             with Connection(server, user=user_dn, password=password, auto_bind=True):
+                 return True
+                 
+        except Exception as e:
+            print(f"LDAP Auth Error: {e}")
+            return False
+
     def resolve_machine_ou(self, hostname: str, session: Optional[Session] = None) -> str:
         """Finds the DN for a given hostname."""
         if settings.AGENT_ONLY:
-            return f"CN={hostname},OU=Agents,DC=local"
+            # Fix: Use dynamic root matching configured base DN or fallback
+            return f"CN={hostname},OU=Agents,{settings.AD_BASE_DN}"
             
         if settings.USE_MOCK_LDAP:
             # Search in mock structure
@@ -92,13 +130,14 @@ class LDAPService:
             
         machines = session.exec(select(Machine)).all()
         
-        # Create a virtual root "Agents"
-        # Frontend expects a single root node object, not a dictionary of nodes
-        
+        # Helper to get domain parts
+        root_dn = settings.AD_BASE_DN # Use configured base instead of hardcoded local
+        root_name = root_dn.replace("DC=", "").replace(",", ".")
+
         children_nodes = []
         for machine in machines:
-            # Use a fake DN for the machine
-            machine_dn = f"CN={machine.hostname},OU=Agents,DC=local"
+            # Fix: Use configured Root
+            machine_dn = f"CN={machine.hostname},OU=Agents,{root_dn}"
             # Use ID as string for key if needed, or DN
             children_nodes.append({
                 "name": machine.hostname,
@@ -108,12 +147,12 @@ class LDAPService:
             })
 
         root_node = {
-            "id": "DC=local",
-            "name": "Agent Network",
+            "id": root_dn,
+            "name": f"Agent Network ({root_name})",
             "type": "domain",
             "children": [
                 {
-                    "id": "OU=Agents,DC=local",
+                    "id": f"OU=Agents,{root_dn}",
                     "name": "Registered Agents",
                     "type": "ou",
                     "children": children_nodes
@@ -142,12 +181,11 @@ class LDAPService:
             # Build a hierarchical tree structure
             
             # Map all OUs by DN
+            # Fix: Normalize DN keys to ensure matching (lowercase keys)
             ou_map = {}
             for ou in ous:
                 ou_dn = str(ou.distinguishedName)
-                # Ensure unified casing for keys if needed, but AD is usually case-insensitive but consistent.
-                # We'll use the DN as is.
-                ou_map[ou_dn] = {
+                ou_map[ou_dn.lower()] = {
                     "id": ou_dn,
                     "name": str(ou.name),
                     "type": "ou",
@@ -155,7 +193,6 @@ class LDAPService:
                 }
             
             # Root node (Domain)
-            # Assuming AD_BASE_DN is the domain root like DC=example,DC=com
             root_dn = settings.AD_BASE_DN
             root_node = {
                 "id": root_dn,
@@ -164,35 +201,58 @@ class LDAPService:
                 "children": []
             }
             
-
             # Helper to find parent DN
             def get_parent_dn(dn):
                 try:
                     parsed = parse_dn(dn)
                     if len(parsed) > 1:
-                        # Reconstruct the parent DN by joining components after the first one
+                        # Reconstruct the parent DN
+                        # parsed is list of (attr, val, sep)
+                        # We want all except the first one.
+                        # We must respect the separators.
+                        
                         parent_parts = []
                         for i in range(1, len(parsed)):
                             attr, val, sep = parsed[i]
-                            # Fix: Properly escape the value to ensure valid DN syntax
-                            parent_parts.append(f"{attr}={escape_dn_chars(val)}")
+                            # Use original separator or assume comma?
+                            # ldap3's parse_dn separates RDNS. The separator is AT THE END of the tuple.
+                            # The last RDN has empty separator.
+                            # We want to reconstruct from index 1.
+                            
+                            part = f"{attr}={escape_dn_chars(val)}"
+                            if sep:
+                                part += sep
+                            parent_parts.append(part)
+                            
+                        # Join them? parse_dn already includes separators in 'sep'
+                        # So we just join them empty?
+                        # Wait, parse_dn returns [('CN', 'Users', ','), ('DC', 'local', '')]
+                        # So parent is "DC=local"
+                        return "".join(parent_parts)
                         
-                        return ",".join(parent_parts)
                 except Exception:
                     pass
                 return None
 
             # Attach OUs to their parents
-            for dn, node in ou_map.items():
-                parent_dn = get_parent_dn(dn)
-                if parent_dn == root_dn:
+            for dn_key, node in ou_map.items():
+                # dn_key is lower cased
+                # node['id'] is original case
+                
+                parent_dn = get_parent_dn(node['id'])
+                if not parent_dn: 
+                    continue
+                    
+                parent_dn_lower = parent_dn.lower()
+                
+                if parent_dn_lower == root_dn.lower():
                     root_node["children"].append(node)
-                elif parent_dn in ou_map:
-                    ou_map[parent_dn]["children"].append(node)
+                elif parent_dn_lower in ou_map:
+                    ou_map[parent_dn_lower]["children"].append(node)
                 else:
                     # Parent might be a container we didn't fetch or it's out of scope
                     # For safety, add to root or ignore. Let's add to root to be safe.
-                    if dn != root_dn: # Avoid self-loop if something is weird
+                    if parent_dn_lower != root_dn.lower(): 
                          root_node["children"].append(node)
 
             # Attach Computers to their OUs
@@ -203,12 +263,17 @@ class LDAPService:
                 
                 comp_node = {"id": comp_dn, "name": comp_name, "type": "computer"}
                 
-                if parent_dn == root_dn:
+                if not parent_dn:
                     root_node["children"].append(comp_node)
-                elif parent_dn in ou_map:
-                    ou_map[parent_dn]["children"].append(comp_node)
+                    continue
+
+                parent_dn_lower = parent_dn.lower()
+
+                if parent_dn_lower == root_dn.lower():
+                    root_node["children"].append(comp_node)
+                elif parent_dn_lower in ou_map:
+                    ou_map[parent_dn_lower]["children"].append(comp_node)
                 else:
-                    # Fallback
                     root_node["children"].append(comp_node)
             
             return root_node

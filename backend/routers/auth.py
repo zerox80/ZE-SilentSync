@@ -17,26 +17,38 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # For the first run, if no admins exist, we might want a bootstrap admin.
     # But for now, let's assume we use LDAP or a pre-seeded admin.
     
-    # 1. Bootstrap Admin (if no admins exist)
-    # Check if any admin exists
-    if not session.exec(select(Admin)).first():
-         # Create bootstrap admin
-         # Bug fix: Do not use SECRET_KEY as password.
-         initial_password = settings.ADMIN_PASSWORD
-         if not initial_password:
-             import secrets
-             initial_password = secrets.token_urlsafe(16)
-             print(f"WARNING: ADMIN_PASSWORD not set. Generated bootstrap password: {initial_password}")
-             
-         hashed_pwd = get_password_hash(initial_password)
-         admin = Admin(username="admin", role="superadmin", hashed_password=hashed_pwd)
-         session.add(admin)
-         session.commit()
-    
+    # 1. Bootstrap Admin: REMOVED.
+    # Logic moved to main.py "on_startup" to avoid Race Conditions and Performance hit on every login.
+
     # 2. Try LDAP Auth
-    # In a real scenario, we would verify against AD here.
-    # if ldap_service.verify_user(form_data.username, form_data.password):
-    #    ... sync user to DB ...
+    # Fix: Enable LDAP Authentication
+    if ldap_service.verify_user(form_data.username, form_data.password):
+        # If LDAP auth succeeds, we ensure the user exists in our local admin table (cache)
+        # so they can have a role, etc.
+        statement = select(Admin).where(Admin.username == form_data.username)
+        user = session.exec(statement).first()
+        if not user:
+            # Auto-provision LDAP user as admin
+            user = Admin(
+                username=form_data.username,
+                hashed_password=get_password_hash(form_data.password), # Cache current password
+                role="admin" # Default role
+            )
+            session.add(user)
+            session.commit()
+            session.refresh(user)
+        else:
+            # Update cached password just in case
+            user.hashed_password = get_password_hash(form_data.password)
+            session.add(user)
+            session.commit()
+            
+        # Proceed to token generation
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user.username}, expires_delta=access_token_expires
+        )
+        return {"access_token": access_token, "token_type": "bearer"}
     
     # 3. DB Auth (Fallback/Cache)
     statement = select(Admin).where(Admin.username == form_data.username)
