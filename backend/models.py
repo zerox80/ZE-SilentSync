@@ -49,6 +49,23 @@ class Software(SQLModel, table=True):
     icon_url: Optional[str] = None
     
     deployments: List["Deployment"] = Relationship(back_populates="software")
+    
+    dependencies: List["Software"] = Relationship(
+        back_populates="dependents",
+        link_model=SoftwareDependency,
+        sa_relationship_kwargs={
+            "primaryjoin": "Software.id==SoftwareDependency.software_id",
+            "secondaryjoin": "Software.id==SoftwareDependency.dependency_id",
+        }
+    )
+    dependents: List["Software"] = Relationship(
+        back_populates="dependencies",
+        link_model=SoftwareDependency,
+        sa_relationship_kwargs={
+            "primaryjoin": "Software.id==SoftwareDependency.dependency_id",
+            "secondaryjoin": "Software.id==SoftwareDependency.software_id",
+        }
+    )
 
 class Deployment(SQLModel, table=True):
     """
@@ -82,7 +99,7 @@ class AuditLog(SQLModel, table=True):
 
 class AgentLog(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
-    machine_id: int = Field(foreign_key="machine.id")
+    machine_id: int = Field(foreign_key="machine.id", index=True)
     timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
     level: str # INFO, ERROR, WARN
     message: str

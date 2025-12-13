@@ -36,7 +36,7 @@ def heartbeat(
         # Determine OU Path
         ou_path = "Unknown"
         if settings.AGENT_ONLY:
-            ou_path = "OU=Agents,DC=local"
+            ou_path = f"OU=Agents,{settings.AD_BASE_DN}"
         else:
             # Resolve for new machines or explicit unknown
             should_resolve = False

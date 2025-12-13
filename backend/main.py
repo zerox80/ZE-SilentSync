@@ -54,15 +54,15 @@ def seed_data():
     
     with Session(engine) as session:
         if not session.exec(select(Admin)).first():
-            # Fix: Fallback to SECRET_KEY if ADMIN_PASSWORD is not set (as per docs)
-            password = settings.ADMIN_PASSWORD or settings.SECRET_KEY
+            # Fix: Do NOT fallback to SECRET_KEY. Generate a random password if not set.
+            password = settings.ADMIN_PASSWORD
             
             if not password:
-                 print("ERROR: ADMIN_PASSWORD and SECRET_KEY not set. Cannot seed Default Admin.")
+                import secrets
+                password = secrets.token_urlsafe(12)
+                print(f"WARNING: ADMIN_PASSWORD not set. Generated temporary password: {password}")
             else:
                 print("Seeding Default Admin...")
-                if not settings.ADMIN_PASSWORD:
-                    print("WARNING: ADMIN_PASSWORD not set. Using SECRET_KEY as default password.")
                     
                 admin = Admin(
                     username="admin", 

@@ -53,12 +53,8 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         )
         return {"access_token": access_token, "token_type": "bearer"}
     elif ldap_status == "INVALID_CREDENTIALS":
-        # SECURITY FIX: Prevent local fallback if AD says credentials are invalid
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password (AD Rejected)",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        # Do not raise immediately. Fall through to check if it's a local-only admin.
+        pass
     # If "NOT_FOUND" or "ERROR", fall through to DB Check
     # This allows local-only admins (NOT_FOUND in AD) to login.
     # And allows cached login if AD is down (ERROR).
@@ -68,8 +64,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     user = session.exec(statement).first()
     
     # Mock Auth for Prototype if user exists (or if we just created 'admin')
+    # Timing Attack Fix: Always run verify_password
     if not user:
-         raise HTTPException(
+        # Dummy verification to consume same time
+        await run_in_threadpool(verify_password, form_data.password, "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWrn96pzwLO3.wS5x0.k.F.eZ./W.")
+        raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},

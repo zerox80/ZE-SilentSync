@@ -23,6 +23,11 @@ def create_software(software: Software, session: Session = Depends(get_session),
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
             raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
 
+    if software.icon_url:
+        url = software.icon_url.lower()
+        if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
+            raise HTTPException(status_code=400, detail="Invalid icon_url. Must start with http://, https://, or /static/")
+
     session.add(software)
     session.commit()
     session.refresh(software)
@@ -309,8 +314,8 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
     # 2. Remove any non-alphanumeric characters except . _ - to be extra safe
     filename = re.sub(r'[^a-zA-Z0-9._-]', '', filename)
     
-    if not filename:
-        raise HTTPException(status_code=400, detail="Invalid filename")
+    if not filename or filename.startswith('.'):
+        raise HTTPException(status_code=400, detail="Invalid filename (Hidden files not allowed)")
 
     # Security: Validate extension
     # Fix: Agent only supports .msi and .exe directly. Archives (.zip, .7z) cause crashes.

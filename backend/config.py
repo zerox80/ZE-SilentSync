@@ -52,7 +52,9 @@ class Settings:
                     for line in f:
                         if "=" in line:
                             k, v = line.strip().split("=", 1)
-                            os.environ[k] = v # Load into env for consistency
+                            # Fix: Do not overwrite existing environment variables (Docker/Shell priority)
+                            if k not in os.environ:
+                                os.environ[k] = v
                             # Also update self if it maps to a property, respecting type
                             if hasattr(self, k):
                                 current_val = getattr(self, k)
