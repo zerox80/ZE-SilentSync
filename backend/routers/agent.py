@@ -61,15 +61,18 @@ def heartbeat(
         client_ip = get_client_ip(request)
         
         # Global limiters should be outside function, but for simplicity/module scope:
-        if not hasattr(heartbeat, "rate_limit_store"):
-             heartbeat.rate_limit_store = {}
-             heartbeat.cleanup_time = datetime.now(timezone.utc)
-             
+        # Check inside lock to be safe from Race Condition (Bug Fix 1)
+        
         # Cleanup every minute
         now = datetime.now(timezone.utc)
         
         # Thread Safety for Global Limiters
         with _rate_limit_lock:
+            # Bug Fix 1: Initialize safely inside lock
+            if not hasattr(heartbeat, "rate_limit_store"):
+                 heartbeat.rate_limit_store = {}
+                 heartbeat.cleanup_time = now
+
             if (now - heartbeat.cleanup_time).total_seconds() > 60:
                  heartbeat.rate_limit_store = {}
                  # Fix Bug 3: Clear creation store to prevent memory leak
@@ -622,9 +625,9 @@ def log_agent_event(
 
         if machine.ip_address and current_ip:
             if machine.ip_address != current_ip:
-                print(f"SECURITY WARNING: Log attempt for {data.mac_address} from unauthorized IP {current_ip} (Expected {machine.ip_address}). Allowing for robustness.")
-                # We do NOT return ignored anymore, just log warning.
-                pass
+                print(f"SECURITY ALERT: Log attempt for {data.mac_address} from unauthorized IP {current_ip} (Expected {machine.ip_address}). Blocking.")
+                # Bug Fix 2: Strictly enforce IP matching
+                raise HTTPException(status_code=403, detail="IP Address Mismatch")
         
         # Bug 5 Fix: Rate Limiting
         # Limit logs to 60 per minute per machine
@@ -646,11 +649,15 @@ def log_agent_event(
 
         # Security: Verify Machine Token
         token_header = request.headers.get("X-Machine-Token")
-        if machine.api_key:
-             if not token_header or not secrets.compare_digest(token_header, machine.api_key):
-                 print(f"SECURITY WARNING: Invalid Machine Token for log from {data.mac_address}")
-                 # For logs, we might just drop it, but 403 is safer to signal misconfig
-                 return {"status": "ignored", "reason": "invalid_token"}
+        
+        # Bug Fix 3: Enforce token presence and validity
+        if not machine.api_key:
+             print(f"SECURITY WARNING: Log attempt for {data.mac_address} which is not provisioned (No API Key).")
+             raise HTTPException(status_code=403, detail="Machine not provisioned")
+
+        if not token_header or not secrets.compare_digest(token_header, machine.api_key):
+             print(f"SECURITY WARNING: Invalid Machine Token for log from {data.mac_address}")
+             raise HTTPException(status_code=403, detail="Invalid Machine Token")
                  
         log = AgentLog(machine_id=machine.id, level=level, message=data.message)
         session.add(log)
