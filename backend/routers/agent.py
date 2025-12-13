@@ -342,6 +342,11 @@ def acknowledge_task(
         if not token_header or not secrets.compare_digest(token_header, machine.api_key):
              print(f"SECURITY WARNING: Invalid Machine Token for {data.mac_address}. Token mismatch.")
              raise HTTPException(status_code=403, detail="Invalid Machine Token")
+    else:
+        # Security Fix: If machine has no API Key, it shouldn't be ACKing tasks (tasks are only issued after key gen).
+        # This prevents spooling attacks on unprovisioned machines.
+        print(f"SECURITY WARNING: Ack received for machine {data.mac_address} without API Key.")
+        raise HTTPException(status_code=403, detail="Machine not provisioned (No API Key)")
 
     # Update or Create Link
     from models import MachineSoftwareLink

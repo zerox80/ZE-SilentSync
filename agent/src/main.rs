@@ -114,8 +114,10 @@ fn get_system_info() -> SystemInfo {
     
     let mac_address = match mac_address::get_mac_address() {
         Ok(Some(mac)) => mac.to_string(),
-        Ok(None) => "00:00:00:00:00:00".to_string(),
-        Err(_) => "00:00:00:00:00:00".to_string(),
+        Ok(None) | Err(_) => {
+            warn!("Failed to get MAC address. generating pseudo-MAC from hostname.");
+            format!("pseudo-mac-{}", hostname)
+        },
     };
 
     SystemInfo {
@@ -139,7 +141,9 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     
     // 1. Download
     let tmp_dir = tempfile::Builder::new().prefix("zldap_install_").tempdir()?;
-    let file_name = task.download_url.split('/').last().unwrap_or("installer.exe");
+    // Fix: Remove query parameters from filename
+    let raw_name = task.download_url.split('/').last().unwrap_or("installer.exe");
+    let file_name = raw_name.split('?').next().unwrap_or("installer.exe");
     let file_path = tmp_dir.path().join(file_name);
 
     info!("Downloading from: {} to {:?}", task.download_url, file_path);
@@ -165,7 +169,8 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     info!("Download complete.");
 
     // 2. Install / Uninstall
-    let mut args: Vec<&str> = task.silent_args.split_whitespace().collect();
+    // Fix: Use custom split_args to handle quotes
+    let mut args: Vec<String> = split_args(&task.silent_args);
     let mut command_path = file_path.clone();
     
     if task.task_type == "uninstall" {
@@ -173,7 +178,7 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
         if task.download_url.to_lowercase().ends_with(".msi") {
             // For MSI, we use msiexec /x <file> /qn
             command_path = std::path::PathBuf::from("msiexec");
-            args = vec!["/x", file_path.to_str().unwrap(), "/qn"];
+            args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
         } else {
             warn!("Uninstalling EXE is experimental. Running downloaded file with args.");
         }
@@ -184,8 +189,7 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
              info!("Detected MSI installer. Using msiexec.");
              command_path = std::path::PathBuf::from("msiexec");
              // msiexec /i <file> <args>
-             // We need to construct a new args vector
-             let mut new_args = vec!["/i", file_path.to_str().unwrap()];
+             let mut new_args = vec!["/i".to_string(), file_path.to_str().unwrap().to_string()];
              new_args.extend(args);
              args = new_args;
         }
@@ -236,4 +240,27 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     let _ = req.send().await;
 
     Ok(())
+}
+
+fn split_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current_arg = String::new();
+    let mut in_quote = false;
+
+    for c in input.chars() {
+        if c == '"' {
+            in_quote = !in_quote;
+        } else if c.is_whitespace() && !in_quote {
+            if !current_arg.is_empty() {
+                args.push(current_arg.clone());
+                current_arg.clear();
+            }
+        } else {
+            current_arg.push(c);
+        }
+    }
+    if !current_arg.is_empty() {
+       args.push(current_arg);
+    }
+    args
 }

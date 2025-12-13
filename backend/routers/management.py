@@ -73,6 +73,19 @@ def delete_software(software_id: int, session: Session = Depends(get_session)):
                         print(f"Error deleting file {file_path}: {e}")
         else:
             print(f"Skipping file deletion for external URL: {software.download_url}")
+            
+    # Fix: Also delete the icon file if it is local
+    if software.icon_url and software.icon_url.startswith("/static/"):
+        icon_filename = os.path.basename(software.icon_url)
+        # Security: basic basename check again
+        safe_icon_filename = os.path.basename(icon_filename)
+        icon_path = os.path.join("uploads", safe_icon_filename)
+        if os.path.exists(icon_path) and os.path.isfile(icon_path):
+            try:
+                os.remove(icon_path)
+                print(f"Deleted icon file: {icon_path}")
+            except Exception as e:
+                print(f"Error deleting icon file {icon_path}: {e}")
 
     session.delete(software)
     session.commit()
