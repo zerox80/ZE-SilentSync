@@ -32,17 +32,27 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         user = session.exec(statement).first()
         if not user:
             # Auto-provision LDAP user as admin
-            user = Admin(
-                username=form_data.username,
-                hashed_password=get_password_hash(form_data.password), # Cache current password
-                role="viewer" # Default role (Least Privilege)
-            )
-            session.add(user)
-            session.commit()
-            session.refresh(user)
+            # Race condition fix: Handle concurrent creation
+            from sqlalchemy.exc import IntegrityError
+            try:
+                hashed_pw = await run_in_threadpool(get_password_hash, form_data.password)
+                user = Admin(
+                    username=form_data.username,
+                    hashed_password=hashed_pw, # Cache current password
+                    role="viewer" # Default role (Least Privilege)
+                )
+                session.add(user)
+                session.commit()
+                session.refresh(user)
+            except IntegrityError:
+                session.rollback()
+                # User was created concurrently, fetch it
+                statement = select(Admin).where(Admin.username == form_data.username)
+                user = session.exec(statement).first()
+                # Update password if needed (optional here, but safe)
         else:
             # Update cached password just in case
-            user.hashed_password = get_password_hash(form_data.password)
+            user.hashed_password = await run_in_threadpool(get_password_hash, form_data.password)
             session.add(user)
             session.commit()
             

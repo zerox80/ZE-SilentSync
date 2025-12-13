@@ -208,10 +208,16 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
              # Try Hostname
              m = session.exec(select(Machine).where(Machine.hostname == target_dn)).first()
              if not m:
-                   # Try CN=Hostname
-                   if target_dn.lower().startswith("cn="):
-                        hostname = target_dn[3:] # Simple strip
-                        m = session.exec(select(Machine).where(Machine.hostname == hostname)).first()
+                    # Try CN=Hostname
+                    if target_dn.lower().startswith("cn="):
+                         # Fix: Robust parsing for DNs, taking only the first component (CN=Hostname)
+                         parts = target_dn.split(",")
+                         if parts:
+                             # Extract value from CN=Value
+                             kv = parts[0].split("=", 1)
+                             if len(kv) == 2 and kv[0].strip().lower() == "cn":
+                                 hostname = kv[1].strip()
+                                 m = session.exec(select(Machine).where(Machine.hostname == hostname)).first()
                    
                    if not m:
                         raise HTTPException(status_code=404, detail=f"Machine {target_dn} not found")
@@ -392,12 +398,12 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
         for sid in request.software_ids:
             link = link_map.get((m_id, sid))
             
-                if link:
-                    if request.action == "install":
-                        link.status = "pending"
-                    elif request.action == "uninstall":
-                        link.status = "pending"
-                
+            if link:
+                if request.action == "install":
+                    link.status = "pending"
+                elif request.action == "uninstall":
+                    link.status = "pending"
+            
                 link.last_updated = datetime.now(timezone.utc)
                 session.add(link)
                 # If existing, we updated it.
@@ -405,11 +411,11 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             else:
                 # Link does not exist. Create it!
                 new_link = MachineSoftwareLink(
-                     machine_id=m_id,
-                     software_id=sid,
-                     status="pending",
-                     last_updated=datetime.now(timezone.utc)
-                 )
+                        machine_id=m_id,
+                        software_id=sid,
+                        status="pending",
+                        last_updated=datetime.now(timezone.utc)
+                    )
                 session.add(new_link)
                 count += 1
 
@@ -512,8 +518,13 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
     except HTTPException:
         raise
     except Exception as e:
-        if final_file_path and os.path.exists(final_file_path):
-            os.remove(final_file_path)
+        # race-proof cleanup: only delete if we actually set final_file_path and it still exists
+        try:
+            if final_file_path and os.path.exists(final_file_path):
+                os.remove(final_file_path)
+        except OSError:
+            # Ignore errors if file is already gone
+            pass
         print(f"Upload error: {e}")
         raise HTTPException(status_code=500, detail="Upload failed")
         
