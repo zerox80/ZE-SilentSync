@@ -5,7 +5,7 @@ from sqlmodel import Session, select, SQLModel
 from typing import List
 from database import get_session
 from auth import get_current_admin
-from models import Software, Deployment, Machine, Admin, MachineSoftwareLink, SoftwareDependency, AuditLog
+from models import Software, Deployment, Machine, Admin, MachineSoftwareLink, SoftwareDependency, AuditLog, MachineRead
 from datetime import datetime, timezone
 from ldap_service import ldap_service
 
@@ -156,7 +156,7 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
 def get_ad_tree(session: Session = Depends(get_session)):
     return ldap_service.get_ou_tree(session)
 
-@router.get("/machines", response_model=List[Machine])
+@router.get("/machines", response_model=List[MachineRead])
 def get_machines(offset: int = 0, limit: int = 100, session: Session = Depends(get_session)):
     return session.exec(select(Machine).offset(offset).limit(limit)).all()
 

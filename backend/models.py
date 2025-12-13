@@ -39,6 +39,16 @@ class Machine(SQLModel, table=True):
     
     deployments: List["Deployment"] = Relationship(back_populates="machine")
 
+class MachineRead(SQLModel):
+    id: int
+    hostname: str
+    mac_address: str
+    ip_address: Optional[str] = None
+    os_info: Optional[str] = None
+    last_seen: datetime
+    ou_path: str
+
+
 class Software(SQLModel, table=True):
     __table_args__ = (UniqueConstraint("name", "version", name="unique_software_version"),)
     id: Optional[int] = Field(default=None, primary_key=True)
