@@ -1,5 +1,5 @@
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel, Relationship
 
 # --- Join Tables ---
@@ -8,7 +8,7 @@ class MachineSoftwareLink(SQLModel, table=True):
     software_id: Optional[int] = Field(default=None, foreign_key="software.id", primary_key=True)
     status: str = Field(default="pending") # pending, installing, installed, failed
     installed_version: Optional[str] = None
-    last_updated: datetime = Field(default_factory=datetime.utcnow)
+    last_updated: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class SoftwareDependency(SQLModel, table=True):
     software_id: Optional[int] = Field(default=None, foreign_key="software.id", primary_key=True)
@@ -31,7 +31,7 @@ class Machine(SQLModel, table=True):
     mac_address: str = Field(index=True, unique=True)
     ip_address: Optional[str] = None
     os_info: Optional[str] = None
-    last_seen: datetime = Field(default_factory=datetime.utcnow)
+    last_seen: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     ou_path: str = Field(default="Unknown") # Cached OU path from AD
     api_key: Optional[str] = None # Per-machine unique token
     
@@ -83,7 +83,7 @@ class Deployment(SQLModel, table=True):
     schedule_end: Optional[datetime] = None
     
     created_by: Optional[int] = Field(default=None, foreign_key="admin.id")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
     machine: Optional[Machine] = Relationship(back_populates="deployments")
     software: Optional[Software] = Relationship(back_populates="deployments")
@@ -94,12 +94,12 @@ class AuditLog(SQLModel, table=True):
     action: str
     target: str
     details: Optional[str] = None
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     level: str # INFO, ERROR, WARN
 
 class AgentLog(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     machine_id: int = Field(foreign_key="machine.id", index=True)
-    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), index=True)
     level: str # INFO, ERROR, WARN
     message: str

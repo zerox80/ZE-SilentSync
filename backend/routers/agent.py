@@ -128,7 +128,9 @@ def heartbeat(
                  if settings.TRUST_PROXY_HEADERS:
                      forwarded = request.headers.get("x-forwarded-for")
                      if forwarded:
-                          machine.ip_address = forwarded.split(",")[0].strip()
+                          # Security Fix: Take the last IP in the chain (most reliable if proxy trusted)
+                          # Using [0] (client provided) allows spoofing.
+                          machine.ip_address = forwarded.split(",")[-1].strip()
                  
             # Fix: Always update OU path to keep it fresh from AD/Logic
             machine.ou_path = ou_path
@@ -353,7 +355,7 @@ def heartbeat(
                     if not link:
                          continue
                     
-                    if link.status == "installed":
+                    if link.status in ["installed", "pending"]:
                          pass # Proceed
                     elif link.status == "failed":
                          # Retry uninstall after 1 hour similar to install
@@ -491,7 +493,7 @@ def log_agent_event(
         if settings.TRUST_PROXY_HEADERS:
              forwarded = request.headers.get("x-forwarded-for")
              if forwarded:
-                  current_ip = forwarded.split(",")[0].strip()
+                  current_ip = forwarded.split(",")[-1].strip()
 
         if machine.ip_address and current_ip:
             if machine.ip_address != current_ip:

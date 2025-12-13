@@ -21,7 +21,10 @@ def create_software(software: Software, session: Session = Depends(get_session),
     if software.download_url:
         url = software.download_url.lower()
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
-            raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
+             raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
+        
+        if url.startswith("/static/") and ".." in url:
+             raise HTTPException(status_code=400, detail="Path traversal detected in download_url")
 
     if software.icon_url:
         url = software.icon_url.lower()
@@ -231,7 +234,13 @@ class BulkDeploymentRequest(SQLModel):
 def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     # Fix: Validate all software IDs first
     # Fix: Validate all software IDs first (Batch check)
-    softwares = session.exec(select(Software).where(Software.id.in_(request.software_ids))).all()
+    softwares = []
+    chunk_size = 500
+    for i in range(0, len(request.software_ids), chunk_size):
+        chunk = request.software_ids[i:i + chunk_size]
+        batch = session.exec(select(Software).where(Software.id.in_(chunk))).all()
+        softwares.extend(batch)
+        
     found_ids = {s.id for s in softwares}
     
     for sid in request.software_ids:
@@ -334,7 +343,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 if request.action == "install":
                     link.status = "pending"
                 elif request.action == "uninstall":
-                    link.status = "installed" 
+                    link.status = "pending" # pending uninstall. Agent logic must be updated to handle this. 
                 
                 link.last_updated = datetime.utcnow()
                 session.add(link)

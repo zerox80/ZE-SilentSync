@@ -70,9 +70,16 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     
     # Mock Auth for Prototype if user exists (or if we just created 'admin')
     # Timing Attack Fix: Always run verify_password
+    # Mock Auth for Prototype if user exists (or if we just created 'admin')
+    # Timing Attack Fix: Always run verify_password
     if not user:
         # Dummy verification to consume same time
-        await run_in_threadpool(verify_password, form_data.password, "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWrn96pzwLO3.wS5x0.k.F.eZ./W.")
+        # Use a consistent dummy hash to avoid recalculating it every time, but generated securely or standard
+        # For simplicity and security, we can use a fixed valid hash derived from a constant if needed, 
+        # but recalculating a hash on startup is better. 
+        # Here we use a safe fallback.
+        dummy_hash = "$2b$12$EixZaYVK1fsbw1ZfbX3OXePaWrn96pzwLO3.wS5x0.k.F.eZ./W." # Keep structure but acknowledge it's dummy
+        await run_in_threadpool(verify_password, form_data.password, dummy_hash)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -80,7 +87,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         )
         
     # Bug Fix: Run CPU-bound bcrypt in threadpool to prevent blocking async loop
-    is_correct_password = await run_in_threadpool(verify_password, form_data.password, user.hashed_password)
+    try:
+        is_correct_password = await run_in_threadpool(verify_password, form_data.password, user.hashed_password)
+    except ValueError:
+        # malicious or corrupted hash in DB
+        is_correct_password = False
     
     if not is_correct_password:
         raise HTTPException(

@@ -55,13 +55,17 @@ class Settings:
         """Load secrets from a dedicated persistence file."""
         try:
             if os.path.exists("secrets.env"):
+                import fcntl
                 with open("secrets.env", "r") as f:
+                    fcntl.flock(f, fcntl.LOCK_SH)
+                    # Loop over lines
                     for line in f:
                         if "=" in line:
                             k, v = line.strip().split("=", 1)
-                            # Fix: Do not overwrite existing environment variables (Docker/Shell priority)
-                            if k not in os.environ:
-                                os.environ[k] = v
+                            # Fix: Do not mutate global os.environ
+                            # if k not in os.environ:
+                            #    os.environ[k] = v
+                            
                             # Also update self if it maps to a property, respecting type
                             if hasattr(self, k):
                                 current_val = getattr(self, k)
