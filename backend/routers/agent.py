@@ -503,6 +503,8 @@ def acknowledge_task(
     request: Request,
     session: Session = Depends(get_session)
 ):
+    mac_address = data.mac_address.strip().lower().replace("-", ":")
+
     # Security: Verify Machine Token if exists
     token_header = request.headers.get("X-Machine-Token")
     # task_id is the deployment_id
@@ -511,18 +513,18 @@ def acknowledge_task(
         raise HTTPException(status_code=404, detail="Deployment not found")
     
     # Find Machine
-    statement = select(Machine).where(Machine.mac_address == data.mac_address)
+    statement = select(Machine).where(Machine.mac_address == mac_address)
     machine = session.exec(statement).first()
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
         
     if machine.api_key:
         if not token_header or not secrets.compare_digest(token_header, machine.api_key):
-             print(f"SECURITY WARNING: Invalid Machine Token for {data.mac_address}. Token mismatch.")
+             print(f"SECURITY WARNING: Invalid Machine Token for {mac_address}. Token mismatch.")
              raise HTTPException(status_code=403, detail="Invalid Machine Token")
     else:
         # This prevents spooling attacks on unprovisioned machines.
-        print(f"SECURITY WARNING: Ack received for machine {data.mac_address} without API Key.")
+        print(f"SECURITY WARNING: Ack received for machine {mac_address} without API Key.")
         raise HTTPException(status_code=403, detail="Machine not provisioned (No API Key)")
 
     # FIX Bug 5: Validate Deployment Target
@@ -607,6 +609,8 @@ def log_agent_event(
     data: LogRequest,
     session: Session = Depends(get_session)
 ):
+    mac_address = data.mac_address.strip().lower().replace("-", ":")
+
     # Validate log level
     valid_levels = {"INFO", "WARN", "ERROR"}
     level = data.level.upper()
@@ -615,7 +619,7 @@ def log_agent_event(
         # level = "INFO" 
         raise HTTPException(status_code=400, detail=f"Invalid log level. Must be one of {valid_levels}")
     
-    statement = select(Machine).where(Machine.mac_address == data.mac_address)
+    statement = select(Machine).where(Machine.mac_address == mac_address)
     machine = session.exec(statement).first()
     
     if machine:
@@ -626,7 +630,7 @@ def log_agent_event(
 
         if machine.ip_address and current_ip:
             if machine.ip_address != current_ip:
-                print(f"SECURITY ALERT: Log attempt for {data.mac_address} from unauthorized IP {current_ip} (Expected {machine.ip_address}). Blocking.")
+                print(f"SECURITY ALERT: Log attempt for {mac_address} from unauthorized IP {current_ip} (Expected {machine.ip_address}). Blocking.")
                 # Bug Fix 2: Strictly enforce IP matching
                 raise HTTPException(status_code=403, detail="IP Address Mismatch")
         
@@ -653,11 +657,11 @@ def log_agent_event(
         
         # Bug Fix 3: Enforce token presence and validity
         if not machine.api_key:
-             print(f"SECURITY WARNING: Log attempt for {data.mac_address} which is not provisioned (No API Key).")
+             print(f"SECURITY WARNING: Log attempt for {mac_address} which is not provisioned (No API Key).")
              raise HTTPException(status_code=403, detail="Machine not provisioned")
 
         if not token_header or not secrets.compare_digest(token_header, machine.api_key):
-             print(f"SECURITY WARNING: Invalid Machine Token for log from {data.mac_address}")
+             print(f"SECURITY WARNING: Invalid Machine Token for log from {mac_address}")
              raise HTTPException(status_code=403, detail="Invalid Machine Token")
                  
         log = AgentLog(machine_id=machine.id, level=level, message=data.message)

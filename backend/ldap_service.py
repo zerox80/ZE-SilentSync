@@ -50,27 +50,31 @@ class LDAPService:
             return "SUCCESS" # In mock mode, any password works for 'admin' usually
             
         try:
-             # Fix: Use AD_SERVER and bind with the user's credentials
-             from ldap3.core.exceptions import LDAPBindError
-             
-             try:
-                 server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
-                 
-                 # 1. Search for User DN
-                 # Bind with service account first
-                 with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
-                     conn.search(settings.AD_BASE_DN, f'(&(objectClass=user)(sAMAccountName={escape_filter_chars(username)}))', attributes=['distinguishedName'])
-                     if not conn.entries:
-                         return "NOT_FOUND"
-                     user_dn = str(conn.entries[0].distinguishedName)
-                     
-                 # 2. Verify password by binding as that user
-                 # This raises LDAPBindError if password is wrong
-                 with Connection(server, user=user_dn, password=password, auto_bind=True):
-                     return "SUCCESS"
-                     
-             except LDAPBindError:
-                 return "INVALID_CREDENTIALS"
+            # Fix: Use AD_SERVER and bind with the user's credentials
+            from ldap3.core.exceptions import LDAPBindError
+
+            try:
+                server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
+
+                # 1. Search for User DN
+                # Bind with service account first
+                with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
+                    conn.search(
+                        settings.AD_BASE_DN,
+                        f"(&(objectClass=user)(sAMAccountName={escape_filter_chars(username)}))",
+                        attributes=["distinguishedName"],
+                    )
+                    if not conn.entries:
+                        return "NOT_FOUND"
+                    user_dn = str(conn.entries[0].distinguishedName)
+
+                # 2. Verify password by binding as that user
+                # This raises LDAPBindError if password is wrong
+                with Connection(server, user=user_dn, password=password, auto_bind=True):
+                    return "SUCCESS"
+
+            except LDAPBindError:
+                return "INVALID_CREDENTIALS"
                  
         except Exception as e:
             print(f"LDAP Auth Error: {e}")
@@ -99,13 +103,17 @@ class LDAPService:
 
         # Real LDAP
         try:
-             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
-             with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
-                 # Search for computer
-                 conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={escape_filter_chars(hostname)}))', attributes=['distinguishedName'])
-                 if conn.entries:
-                     return str(conn.entries[0].distinguishedName)
-             return "Unknown"
+            server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
+            with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
+                # Search for computer
+                conn.search(
+                    settings.AD_BASE_DN,
+                    f"(&(objectClass=computer)(name={escape_filter_chars(hostname)}))",
+                    attributes=["distinguishedName"],
+                )
+                if conn.entries:
+                    return str(conn.entries[0].distinguishedName)
+            return "Unknown"
         except Exception as e:
             # Fix Bug 8: Improve error logging for debugging
             print(f"LDAP Lookup Error in resolve_machine_ou for {hostname}: {e}")
@@ -164,9 +172,15 @@ class LDAPService:
     def _fetch_real_ad_structure(self) -> Dict[str, Any]:
         """Connects to real AD and builds the tree."""
         try:
-             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
+            server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
             # Fix: Use context manager to ensure unbind
-            with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True, raise_exceptions=True) as conn:
+            with Connection(
+                server,
+                user=settings.AD_USER,
+                password=settings.AD_PASSWORD,
+                auto_bind=True,
+                raise_exceptions=True,
+            ) as conn:
                 # Search for OUs and Computers
                 conn.search(settings.AD_BASE_DN, '(objectClass=organizationalUnit)', attributes=['distinguishedName', 'name'])
                 ous = [entry for entry in conn.entries]
@@ -203,19 +217,19 @@ class LDAPService:
             # Helper to find parent DN
             def get_parent_dn(dn):
                 try:
-                     # Fix Bug 1: Use robust DN parsing
-                     parsed = parse_dn(dn)
-                     if len(parsed) > 1:
-                         # Reconstruct parent by skipping the first RDN
-                         parent_parts = []
-                         for i in range(1, len(parsed)):
-                             attr, val, sep = parsed[i]
-                             # We must re-escape special characters in the value
-                             # escape_dn_chars handles ',', '+', '"', '\', '<', '>', ';', etc.
-                             escaped_val = escape_dn_chars(val)
-                             parent_parts.append(f"{attr}={escaped_val}")
-                         
-                         return ",".join(parent_parts)
+                    # Fix Bug 1: Use robust DN parsing
+                    parsed = parse_dn(dn)
+                    if len(parsed) > 1:
+                        # Reconstruct parent by skipping the first RDN
+                        parent_parts = []
+                        for i in range(1, len(parsed)):
+                            attr, val, sep = parsed[i]
+                            # We must re-escape special characters in the value
+                            # escape_dn_chars handles ',', '+', '"', '\', '<', '>', ';', etc.
+                            escaped_val = escape_dn_chars(val)
+                            parent_parts.append(f"{attr}={escaped_val}")
+
+                        return ",".join(parent_parts)
                 except Exception:
                     pass
                 return None
@@ -239,7 +253,7 @@ class LDAPService:
                     # Parent might be a container we didn't fetch or it's out of scope
                     # For safety, add to root or ignore. Let's add to root to be safe.
                     if parent_dn_lower != root_dn.lower(): 
-                         root_node["children"].append(node)
+                        root_node["children"].append(node)
 
             # Attach Computers to their OUs
             for comp in computers:

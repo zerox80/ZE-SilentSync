@@ -392,11 +392,11 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
         for sid in request.software_ids:
             link = link_map.get((m_id, sid))
             
-            if link:
-                if request.action == "install":
-                    link.status = "pending"
-                elif request.action == "uninstall":
-                    link.status = "pending" # pending uninstall. Agent logic must be updated to handle this. 
+                if link:
+                    if request.action == "install":
+                        link.status = "pending"
+                    elif request.action == "uninstall":
+                        link.status = "pending"
                 
                 link.last_updated = datetime.now(timezone.utc)
                 session.add(link)
@@ -407,7 +407,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 new_link = MachineSoftwareLink(
                      machine_id=m_id,
                      software_id=sid,
-                     status="pending" if request.action == "install" else "unknown",
+                     status="pending",
                      last_updated=datetime.now(timezone.utc)
                  )
                 session.add(new_link)

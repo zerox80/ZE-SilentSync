@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{thread, time};
+use std::time::Duration;
 use std::process::Command;
 use std::fs::File;
 use std::io::copy;
@@ -37,6 +37,27 @@ struct HeartbeatResponse {
     status: String,
     tasks: Vec<Task>,
     machine_token: Option<String>,
+}
+
+fn derive_pseudo_mac(hostname: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    hostname.hash(&mut hasher);
+    let hash = hasher.finish();
+    let hash_bytes = hash.to_be_bytes(); // 8 bytes
+
+    let mut mac_bytes = [0u8; 6];
+    mac_bytes.copy_from_slice(&hash_bytes[2..8]);
+
+    // Ensure a locally administered, unicast MAC address.
+    mac_bytes[0] = (mac_bytes[0] | 0x02) & 0xFE;
+
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac_bytes[0], mac_bytes[1], mac_bytes[2], mac_bytes[3], mac_bytes[4], mac_bytes[5]
+    )
 }
 
 #[tokio::main]
@@ -104,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Err(e) => error!("Failed to send heartbeat: {}", e),
         }
 
-        thread::sleep(time::Duration::from_secs(config.heartbeat_interval));
+        tokio::time::sleep(Duration::from_secs(config.heartbeat_interval)).await;
     }
 }
 
@@ -115,8 +136,8 @@ fn get_system_info() -> SystemInfo {
     let mac_address = match mac_address::get_mac_address() {
         Ok(Some(mac)) => mac.to_string(),
         Ok(None) | Err(_) => {
-            warn!("Failed to get MAC address. generating pseudo-MAC from hostname.");
-            format!("pseudo-mac-{}", hostname)
+            warn!("Failed to get MAC address. Generating deterministic pseudo-MAC from hostname.");
+            derive_pseudo_mac(&hostname)
         },
     };
 
