@@ -192,6 +192,11 @@ def get_machines(offset: int = 0, limit: int = 100, session: Session = Depends(g
 def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     if not target_dn or not target_dn.strip():
         raise HTTPException(status_code=400, detail="Target DN cannot be empty")
+    
+    # Bug Fix: Validate target_type parameter
+    valid_target_types = {"machine", "ou", "group"}
+    if target_type not in valid_target_types:
+        raise HTTPException(status_code=400, detail=f"Invalid target_type. Must be one of: {', '.join(valid_target_types)}")
         
     # Fix: Validate software existence
     software = session.get(Software, software_id)
@@ -292,7 +297,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 # Try Hostname match (CN=...)
                 hostname_candidate = target_dn
                 if target_upper.startswith("CN="):
-                    parts = re.split(r'(?<!\\),', target_dn)
+                    parts = re.split(r'(?<!\\\\),', target_dn)
                     if parts:
                         kv = parts[0].split("=", 1)
                         if len(kv) == 2:

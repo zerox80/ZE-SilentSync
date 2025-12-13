@@ -36,7 +36,7 @@ class Settings:
     SECRET_KEY = os.getenv("SECRET_KEY")
     AGENT_TOKEN = os.getenv("AGENT_TOKEN")
     AGENT_ONLY = os.getenv("AGENT_ONLY", "False").lower() == "true"
-    ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+    ALLOWED_ORIGINS = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")]
     BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
     TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "False").lower() == "true"
@@ -128,8 +128,10 @@ class Settings:
                         # Last value usually wins in doten.
                         
                         ensure_newline = False
-                        if f.tell() > 0:
-                            f.seek(f.tell() - 1)
+                        f.seek(0, 2)  # Seek to end
+                        file_size = f.tell()
+                        if file_size > 0:
+                            f.seek(file_size - 1)
                             if f.read(1) != "\n":
                                 ensure_newline = True
                         

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select, or_
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from database import get_session
 from models import Machine, Deployment, Software, AgentLog
 from auth import verify_agent_token
@@ -69,7 +69,7 @@ def heartbeat(
                     hostname=hostname, 
                     mac_address=mac_address, 
                     os_info=os_info,
-                    last_seen=datetime.utcnow(),
+                    last_seen=datetime.now(timezone.utc),
                     ou_path=ou_path
                 )
                 session.add(machine)
@@ -79,7 +79,7 @@ def heartbeat(
                     hostname=hostname, 
                     mac_address=mac_address, 
                     os_info=os_info,
-                    last_seen=datetime.utcnow(),
+                    last_seen=datetime.now(timezone.utc),
                     ou_path=ou_path
                 )
                 session.add(machine)
@@ -113,7 +113,7 @@ def heartbeat(
                     # session.delete(machine) ...
             
         # Update machine details
-            machine.last_seen = datetime.utcnow()
+            machine.last_seen = datetime.now(timezone.utc)
             machine.hostname = hostname
             machine.os_info = os_info
             # Ip Address Security / IDOR prep
@@ -171,7 +171,7 @@ def heartbeat(
                          # It was an update collision or someone inserted same MAC
                          machine = existing_machine
                          machine.hostname = new_hostname
-                         machine.last_seen = datetime.utcnow()
+                         machine.last_seen = datetime.now(timezone.utc)
                          machine.ou_path = ou_path
                          # Merge/Add
                          session.add(machine)
@@ -181,7 +181,7 @@ def heartbeat(
                             hostname=new_hostname, # New Name
                             mac_address=mac_address, 
                             os_info=os_info,
-                            last_seen=datetime.utcnow(),
+                            last_seen=datetime.now(timezone.utc),
                             ou_path=ou_path,
                             api_key=secrets.token_urlsafe(32) # New Token
                         )
@@ -205,7 +205,7 @@ def heartbeat(
                           raise HTTPException(status_code=409, detail="Hostname collision could not be resolved.")
         
         # --- Task Resolution Logic ---
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         tasks = []
         processed_software_ids = set()
         
@@ -221,7 +221,7 @@ def heartbeat(
             # CN=PC1,OU=Sales,DC=example -> [OU=Sales,DC=example, DC=example]
             # Split by comma (naive, but usually works for AD unless comma in name)
             # Fix: Use regex to handle escaped commas
-            parts = re.split(r'(?<!\\),', machine.ou_path)
+            parts = re.split(r'(?<!\\\\),', machine.ou_path)
             # If start with CN=, skip first part
             start_idx = 1 if parts[0].upper().startswith("CN=") else 0
             
@@ -236,7 +236,7 @@ def heartbeat(
             # Actually, standard AD structure: OU=A,OU=B,DC=C
             # We want all suffixes.
             # simpler:
-            parts = re.split(r'(?<!\\),', current_dn)
+            parts = re.split(r'(?<!\\\\),', current_dn)
             for i in range(len(parts)):
                  # Only if it looks like a valid component (OU= or DC=)
                  dn_candidate = ",".join(parts[i:])
@@ -347,7 +347,7 @@ def heartbeat(
                                  pass
                         elif link.status == "failed":
                             # Retry after 1 hour
-                            if datetime.utcnow() - link.last_updated < timedelta(hours=1):
+                            if datetime.now(timezone.utc) - link.last_updated < timedelta(hours=1):
                                 continue
                             # Else, fall through to retry
                 # If Action is UNINSTALL
@@ -360,7 +360,7 @@ def heartbeat(
                          pass # Proceed
                     elif link.status == "failed":
                          # Retry uninstall after 1 hour similar to install
-                         if datetime.utcnow() - link.last_updated < timedelta(hours=1):
+                         if datetime.now(timezone.utc) - link.last_updated < timedelta(hours=1):
                              continue
                          print(f"DEBUG: Retrying uninstall for {dep.software.name}")
                     else:
@@ -457,7 +457,7 @@ def acknowledge_task(
     else:
         link.status = "failed"
         
-    link.last_updated = datetime.utcnow()
+    link.last_updated = datetime.now(timezone.utc)
     session.add(link)
     session.commit()
     
@@ -505,7 +505,7 @@ def log_agent_event(
         # Bug 5 Fix: Rate Limiting
         # Limit logs to 60 per minute per machine
         from sqlalchemy import func
-        cutoff = datetime.utcnow() - timedelta(minutes=1)
+        cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
         
         # Optimized Count Query
         statement = select(func.count()).where(
