@@ -18,49 +18,84 @@ class Settings:
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
     def __init__(self):
+        # Fix: Load from .env first, then secrets file fallback
+        self._load_from_secrets_file()
+        
+        # Load again from env to ensure priority
+        self.AD_PASSWORD = os.getenv("AD_PASSWORD", self.AD_PASSWORD)
+        self.SECRET_KEY = os.getenv("SECRET_KEY", self.SECRET_KEY)
+        # Fix: AGENT_TOKEN fallback should use the value loaded from secrets.env if not in os.getenv
+        self.AGENT_TOKEN = os.getenv("AGENT_TOKEN", self.AGENT_TOKEN)
+
         if not self.USE_MOCK_LDAP:
             if not self.AD_PASSWORD:
                 raise ValueError("AD_PASSWORD must be set in production mode!")
         
         if not self.SECRET_KEY:
-            if self.USE_MOCK_LDAP:
-                self.SECRET_KEY = secrets.token_urlsafe(32)
-                print("WARNING: SECRET_KEY not set. Generated a random one for Mock Mode.")
-            else:
-                self.SECRET_KEY = secrets.token_urlsafe(32)
-                # Fix: Persist to .env
-                self._append_to_env("SECRET_KEY", self.SECRET_KEY)
-                print("WARNING: SECRET_KEY was missing. Generated and saved to .env")
+            self.SECRET_KEY = secrets.token_urlsafe(32)
+            self._save_secret("SECRET_KEY", self.SECRET_KEY)
+            print("WARNING: SECRET_KEY was missing. Generated and saved.")
 
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
-            if self.USE_MOCK_LDAP:
-                self.AGENT_TOKEN = secrets.token_urlsafe(32)
-                print(f"WARNING: AGENT_TOKEN not set. Generated a random secure token: {self.AGENT_TOKEN}")
-            else:
-                # Fix: Generate a secure random token and PERSIST it
-                self.AGENT_TOKEN = secrets.token_urlsafe(32)
-                self._append_to_env("AGENT_TOKEN", self.AGENT_TOKEN)
-                print(f"WARNING: AGENT_TOKEN was missing. Generated and saved to .env")
-                
-    def _append_to_env(self, key, value):
+            prefix = self.SECRET_KEY[:8] if self.SECRET_KEY else "unknown"
+            self.AGENT_TOKEN = f"agent-{prefix}-{secrets.token_urlsafe(24)}"
+            self._save_secret("AGENT_TOKEN", self.AGENT_TOKEN)
+            print(f"WARNING: AGENT_TOKEN was missing. Generated and saved.")
+
+
+    def _load_from_secrets_file(self):
+        """Load secrets from a dedicated persistence file."""
         try:
-            # Fix: Ensure we don't corrupt the file if it doesn't end with a newline
+            if os.path.exists("secrets.env"):
+                with open("secrets.env", "r") as f:
+                    for line in f:
+                        if "=" in line:
+                            k, v = line.strip().split("=", 1)
+                            os.environ[k] = v # Load into env for consistency
+                            # Also update self if it maps to a property, respecting type
+                            if hasattr(self, k):
+                                current_val = getattr(self, k)
+                                target_type = type(current_val)
+                                
+                                if target_type == bool:
+                                    v_typed = v.lower() == "true"
+                                elif target_type == int:
+                                    try:
+                                        v_typed = int(v)
+                                    except ValueError:
+                                        v_typed = v
+                                else:
+                                    v_typed = v
+                                    
+                                setattr(self, k, v_typed)
+        except Exception as e:
+            print(f"Failed to load secrets.env: {e}")
+
+    def _save_secret(self, key, value):
+        """Persist secret to both .env and secrets.env for redundancy"""
+        # 1. Update .env (Best Effort)
+        self._append_to_file(".env", key, value)
+        # 2. Update secrets.env (Robust persistence for Docker volumes)
+        self._append_to_file("secrets.env", key, value)
+        
+    def _append_to_file(self, filepath, key, value):
+        try:
+            # Ensure proper newline handling
             prefix = ""
-            if os.path.exists(".env"):
-                with open(".env", "rb") as f:
+            if os.path.exists(filepath):
+                with open(filepath, "rb") as f:
                     try:
                         f.seek(-1, os.SEEK_END)
                         last_char = f.read(1)
                         if last_char != b"\n":
                             prefix = "\n"
                     except OSError:
-                        # Empty file or other issue
-                        pass
+                        pass # Empty file
 
-            with open(".env", "a") as f:
+            with open(filepath, "a") as f:
                 f.write(f"{prefix}{key}={value}\n")
         except Exception as e:
-            print(f"Failed to save {key} to .env: {e}")
+            print(f"Failed to save {key} to {filepath}: {e}")
 
 settings = Settings()

@@ -83,6 +83,6 @@ class AuditLog(SQLModel, table=True):
 class AgentLog(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     machine_id: int = Field(foreign_key="machine.id")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=datetime.utcnow, index=True)
     level: str # INFO, ERROR, WARN
     message: str

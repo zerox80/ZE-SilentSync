@@ -134,15 +134,50 @@ def heartbeat(
             session.commit()
             session.refresh(machine)
         except Exception as e:
-            # Handle potential race conditions (IntegrityError)
+            # Bug 3 Fix: Handle IntegrityError explicitly for Hostname Collision
+            # and implement retry logic.
             session.rollback()
-            # If it was a unique constraint violation (e.g. parallel heartbeat), 
-            # we can just ignore it for this heartbeat or fetch again.
-            print(f"WARNING: Database commit failed (likely race condition): {e}")
-            # Try to fetch fresh state to return tasks
-            machine = session.exec(select(Machine).where(Machine.mac_address == mac_address)).first()
-            if not machine:
-                 raise HTTPException(status_code=500, detail="Could not recover machine state after race condition")
+            from sqlalchemy.exc import IntegrityError
+            
+            if isinstance(e, IntegrityError) or "unique constraint" in str(e).lower():
+                print(f"WARNING: Race condition detected for {hostname} (IntegrityError). Retrying with new hostname...")
+                
+                # Retry logic with collision handling
+                try: 
+                    # 1. Generate new unique hostname suffix
+                    # We can't reuse the code easily without a loop, so let's do a meaningful one-time retry
+                    suffix = secrets.token_hex(2)
+                    new_hostname = f"{data.hostname}-dup-{suffix}"
+                    
+                    # 2. Re-instantiate machine object (can't reuse the failed attached object easily)
+                    # Fetch OU again just in case
+                    machine_retry = Machine(
+                        hostname=new_hostname, # New Name
+                        mac_address=mac_address, 
+                        os_info=os_info,
+                        last_seen=datetime.utcnow(),
+                        ou_path=ou_path,
+                        api_key=secrets.token_urlsafe(32) # New Token
+                    )
+                    
+                    session.add(machine_retry)
+                    session.commit()
+                    session.refresh(machine_retry)
+                    machine = machine_retry
+                    print(f"Recovered from race condition. New hostname: {machine.hostname}")
+                    
+                except Exception as retry_e:
+                     # If it fails again, we give up to avoid infinite loops
+                     print(f"ERROR: Failed to recover from race condition: {retry_e}")
+                     raise HTTPException(status_code=409, detail="Hostname collision could not be resolved.")
+                     
+            else:
+                 # Other DB error
+                 print(f"WARNING: Database commit failed: {e}")
+                 # Try to fetch fresh state to return tasks
+                 machine = session.exec(select(Machine).where(Machine.mac_address == mac_address)).first()
+                 if not machine:
+                      raise HTTPException(status_code=500, detail="Internal Server Error during registration.")
         
         # --- Task Resolution Logic ---
         current_time = datetime.utcnow()
@@ -427,6 +462,25 @@ def log_agent_event(
                 # We do NOT return ignored anymore, just log warning.
                 pass
                 
+                # We do NOT return ignored anymore, just log warning.
+                pass
+        
+        # Bug 5 Fix: Rate Limiting
+        # Limit logs to 60 per minute per machine
+        from sqlalchemy import func
+        cutoff = datetime.utcnow() - timedelta(minutes=1)
+        
+        # Optimized Count Query
+        statement = select(func.count()).where(
+            (AgentLog.machine_id == machine.id) & 
+            (AgentLog.timestamp > cutoff)
+        )
+        log_count = session.exec(statement).one()
+        
+        if log_count > 60:
+            print(f"Rate Limit Exceeded for {machine.hostname}")
+            raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
         # Security: Verify Machine Token
         token_header = request.headers.get("X-Machine-Token")
         if machine.api_key:

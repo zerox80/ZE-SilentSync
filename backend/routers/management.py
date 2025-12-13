@@ -63,43 +63,38 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
 
     # Delete the actual file from disk
     import os
-    
-    # Fix: Check shared usage before deletion
-    def is_file_unique(url):
-        # We query software table. Since we haven't deleted 'software' record yet, count should be > 1 if shared.
-        # If count == 1, it's only this record.
-        others = session.exec(select(Software).where((Software.download_url == url) | (Software.icon_url == url))).all()
-        # Filter strictly those that are NOT the current one (just in case session state matches)
-        # But 'software' is in session.
-        return len([s for s in others if s.id != software_id]) == 0
-
-    # Collect files to delete but wait until AFTER commit
     files_to_delete = []
-
+    
+    # Bug 2 Fix: Check for file usage AFTER the commit to ensure we see the updated state
+    # This might still have a tiny race if another transaction inserts a reference between our commit and this check,
+    # but it's much safer than checking BEFORE delete.
+    # Ideally, we would rely on a garbage collector process, but for this scope:
     if software.download_url and software.download_url.startswith("/static/"):
         filename = os.path.basename(software.download_url)
         safe_filename = os.path.basename(filename)
         file_path = os.path.join("uploads", safe_filename)
         
-        if is_file_unique(software.download_url):
+        # Check if ANY software still uses this URL (since we just deleted ours, count should be 0 if unique)
+        usage_count = session.exec(select(Software).where(Software.download_url == software.download_url)).all()
+        
+        if len(usage_count) == 0:
              files_to_delete.append(file_path)
         else:
-             print(f"Skipping file deletion for {file_path} (Shared)")
+             print(f"Skipping file deletion for {file_path} (Still used by {len(usage_count)} others)")
 
     if software.icon_url and software.icon_url.startswith("/static/"):
         icon_filename = os.path.basename(software.icon_url)
         safe_icon_filename = os.path.basename(icon_filename)
         icon_path = os.path.join("uploads", safe_icon_filename)
         
-        if is_file_unique(software.icon_url):
+        usage_count = session.exec(select(Software).where(Software.icon_url == software.icon_url)).all()
+        
+        if len(usage_count) == 0:
             files_to_delete.append(icon_path)
         else:
-             print(f"Skipping icon deletion for {icon_path} (Shared)")
+             print(f"Skipping icon deletion for {icon_path} (Still used by {len(usage_count)} others)")
 
-    session.delete(software)
-    session.commit()
-    
-    # Fix: Delete files only after successful commit
+    # Execute deletion
     for fpath in files_to_delete:
         if os.path.exists(fpath) and os.path.isfile(fpath):
             try:
@@ -314,39 +309,70 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
     file_path = os.path.join(UPLOAD_DIR, filename)
     
     # Fix: Prevent overwrites by auto-renaming
-    if os.path.exists(file_path):
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-        name, extension = os.path.splitext(filename)
-        filename = f"{name}_{timestamp}{extension}"
-        file_path = os.path.join(UPLOAD_DIR, filename)
-    
-    # Run blocking I/O in a worker thread and ensure the target file handle is closed.
-    # Fix: Limit upload size to prevent DoS (e.g., 500MB)
     MAX_FILE_SIZE = 500 * 1024 * 1024
     
-    async def _write_upload():
-        size = 0
-        with open(file_path, "wb") as out_file:
+    # Bug 4 Fix: TOCTOU - Use Exclusive Creation (mode='xb') inside a loop to prevent overwrites
+    # This guarantees that WE created the file and no one else exists with that name.
+    
+    final_file_path = None
+    file_handle = None
+    
+    try:
+        # Retry loop for name generation
+        for _ in range(5):
+             # Try unsafe name first if not exists, then timestamped
+             # Logic refactored: Always try to get a handle.
+             try:
+                 # Check if we need a timestamp
+                 # We try 'file_path' (original name) first? 
+                 # Or just generated logic?
+                 # Let's try the constructed 'file_path' first.
+                 
+                 # But we need atomic open.
+                 if os.path.exists(file_path):
+                     # If exists, force rename logic immediately
+                     raise FileExistsError
+                     
+                 file_handle = open(file_path, "xb")
+                 final_file_path = file_path
+                 break
+             except FileExistsError:
+                 # Generate new name
+                 from datetime import datetime
+                 import secrets
+                 timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                 # random suffix to be sure
+                 suffix = secrets.token_hex(4)
+                 name, extension = os.path.splitext(filename)
+                 # Reconstruct filename and path for next calc
+                 filename = f"{name}_{timestamp}_{suffix}{extension}"
+                 file_path = os.path.join(UPLOAD_DIR, filename)
+                 continue
+                 
+        if not file_handle:
+             raise HTTPException(status_code=500, detail="Could not generate unique filename.")
+             
+        # Write to the exclusive handle
+        try:
+            size = 0
             while True:
                 chunk = await file.read(1024 * 1024) # 1MB chunks
                 if not chunk:
                     break
                 size += len(chunk)
                 if size > MAX_FILE_SIZE:
-                     # Clean up
-                     out_file.close() # Ensure close before remove
-                     os.remove(file_path)
+                     file_handle.close()
+                     os.remove(final_file_path)
                      raise HTTPException(status_code=413, detail="File too large (Max 500MB)")
-                out_file.write(chunk)
+                file_handle.write(chunk)
+        finally:
+            file_handle.close()
 
-    try:
-        await _write_upload()
     except HTTPException:
         raise
     except Exception as e:
-        if os.path.exists(file_path):
-            os.remove(file_path)
+        if final_file_path and os.path.exists(final_file_path):
+            os.remove(final_file_path)
         print(f"Upload error: {e}")
         raise HTTPException(status_code=500, detail="Upload failed")
         
