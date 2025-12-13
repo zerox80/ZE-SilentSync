@@ -33,6 +33,7 @@ class Machine(SQLModel, table=True):
     os_info: Optional[str] = None
     last_seen: datetime = Field(default_factory=datetime.utcnow)
     ou_path: str = Field(default="Unknown") # Cached OU path from AD
+    api_key: Optional[str] = None # Per-machine unique token
     
     deployments: List["Deployment"] = Relationship(back_populates="machine")
 

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from database import get_session
 from models import Machine, Deployment, Software, AgentLog
 from auth import verify_agent_token
+import secrets
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"], dependencies=[Depends(verify_agent_token)])
 
@@ -81,6 +82,13 @@ def heartbeat(
             if settings.AGENT_ONLY:
                  machine.ou_path = ou_path
             session.add(machine)
+        
+        # --- Token Rotation / Provisioning ---
+        if not machine.api_key:
+            # Generate new token for this machine
+            machine.api_key = secrets.token_urlsafe(32)
+            session.add(machine)
+            print(f"DEBUG: Generated new api_key for {machine.hostname}")
         
         try:
             session.commit()
@@ -258,7 +266,7 @@ def heartbeat(
                     processed_software_ids.add(dep.software_id)
                 
         print(f"DEBUG: Returning {len(tasks)} tasks.")
-        return {"status": "ok", "tasks": tasks}
+        return {"status": "ok", "tasks": tasks, "machine_token": machine.api_key}
     except Exception as e:
         import traceback
         error_msg = f"ERROR: Heartbeat failed for {data.hostname}: {e}\n{traceback.format_exc()}"
@@ -276,8 +284,11 @@ class AckRequest(BaseModel):
 @router.post("/ack")
 def acknowledge_task(
     data: AckRequest,
+    request: Request,
     session: Session = Depends(get_session)
 ):
+    # Security: Verify Machine Token if exists
+    token_header = request.headers.get("X-Machine-Token")
     # task_id is the deployment_id
     deployment = session.get(Deployment, data.task_id)
     if not deployment:
@@ -288,6 +299,11 @@ def acknowledge_task(
     machine = session.exec(statement).first()
     if not machine:
         raise HTTPException(status_code=404, detail="Machine not found")
+        
+    if machine.api_key:
+        if token_header != machine.api_key:
+             print(f"SECURITY WARNING: Invalid Machine Token for {data.mac_address}. Expected {machine.api_key[:5]}... got {token_header}")
+             raise HTTPException(status_code=403, detail="Invalid Machine Token")
 
     # Update or Create Link
     from models import MachineSoftwareLink
@@ -343,6 +359,14 @@ def log_agent_event(
                 # We could raise 403, or just drop the log silently to not leak info.
                 return {"status": "ignored"}
                 
+        # Security: Verify Machine Token
+        token_header = request.headers.get("X-Machine-Token")
+        if machine.api_key:
+             if token_header != machine.api_key:
+                 print(f"SECURITY WARNING: Invalid Machine Token for log from {mac_address}")
+                 # For logs, we might just drop it, but 403 is safer to signal misconfig
+                 return {"status": "ignored", "reason": "invalid_token"}
+                 
         log = AgentLog(machine_id=machine.id, level=level, message=message)
         session.add(log)
         session.commit()

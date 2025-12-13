@@ -4,7 +4,7 @@ from sqlmodel import Session, select, SQLModel
 from typing import List
 from database import get_session
 from auth import get_current_admin
-from models import Software, Deployment, Machine, Admin, MachineSoftwareLink
+from models import Software, Deployment, Machine, Admin, MachineSoftwareLink, SoftwareDependency
 from datetime import datetime
 from ldap_service import ldap_service
 
@@ -41,6 +41,14 @@ def delete_software(software_id: int, session: Session = Depends(get_session)):
     links = session.exec(select(MachineSoftwareLink).where(MachineSoftwareLink.software_id == software_id)).all()
     for link in links:
         session.delete(link)
+
+    # Delete associated dependencies (both directions)
+    dependencies = session.exec(select(SoftwareDependency).where(
+        (SoftwareDependency.software_id == software_id) | 
+        (SoftwareDependency.dependency_id == software_id)
+    )).all()
+    for dep in dependencies:
+        session.delete(dep)
 
     session.delete(software)
     session.commit()

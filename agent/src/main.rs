@@ -34,6 +34,7 @@ struct Task {
 struct HeartbeatResponse {
     status: String,
     tasks: Vec<Task>,
+    machine_token: Option<String>,
 }
 
 #[tokio::main]
@@ -53,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Configuration loaded. Backend: {}", config.backend_url);
 
     let client = reqwest::Client::new();
+    let mut machine_token: Option<String> = None;
 
     loop {
         let sys_info = get_system_info();
@@ -68,10 +70,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if resp.status().is_success() {
                     match resp.json::<HeartbeatResponse>().await {
                         Ok(hb_resp) => {
+                            // Update machine token if provided
+                            if let Some(token) = hb_resp.machine_token {
+                                if machine_token.is_none() {
+                                    info!("Received Machine Token.");
+                                }
+                                machine_token = Some(token);
+                            }
+
                             if !hb_resp.tasks.is_empty() {
                                 info!("Received {} tasks", hb_resp.tasks.len());
                                 for task in hb_resp.tasks {
-                                    if let Err(e) = process_task(&task, &config, &client).await {
+                                    // Pass machine_token clone
+                                    if let Err(e) = process_task(&task, &config, &client, &machine_token).await {
                                         error!("Failed to process task {}: {}", task.software_name, e);
                                     }
                                 }
@@ -115,7 +126,7 @@ struct AckRequest {
     mac_address: String,
 }
 
-async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Client) -> Result<(), Box<dyn std::error::Error>> {
+async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Client, machine_token: &Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     info!("--- Processing Task: {} ---", task.task_type);
     info!("Target: {}", task.software_name);
     
@@ -199,11 +210,15 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     };
 
     info!("Sending Acknowledgement...");
-    let _ = client.post(format!("{}/ack", config.backend_url))
+    let mut req = client.post(format!("{}/ack", config.backend_url))
         .header("X-Agent-Token", &config.auth_token)
-        .json(&ack)
-        .send()
-        .await;
+        .json(&ack);
+        
+    if let Some(token) = machine_token {
+        req = req.header("X-Machine-Token", token);
+    }
+        
+    let _ = req.send().await;
 
     Ok(())
 }
