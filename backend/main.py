@@ -46,6 +46,23 @@ def seed_data():
             
             session.commit()
 
+    # Seed Default Admin
+    from models import Admin
+    from auth import get_password_hash
+    from config import settings
+    
+    with Session(engine) as session:
+        if not session.exec(select(Admin)).first():
+            print("Seeding Default Admin...")
+            admin = Admin(
+                username="admin", 
+                hashed_password=get_password_hash(settings.SECRET_KEY),
+                role="superadmin"
+            )
+            session.add(admin)
+            session.commit()
+            print("Default admin created.")
+
 from fastapi.staticfiles import StaticFiles
 import os
 

@@ -13,6 +13,8 @@ class Settings:
     AGENT_TOKEN = os.getenv("AGENT_TOKEN")
     AGENT_ONLY = os.getenv("AGENT_ONLY", "False").lower() == "true"
     ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+    BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+    ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
     def __init__(self):
         if not self.USE_MOCK_LDAP:
@@ -26,7 +28,9 @@ class Settings:
             else:
                 raise ValueError("SECRET_KEY must be set in production mode!")
 
+        # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
-             raise ValueError("AGENT_TOKEN must be set in environment variables!")
+            self.AGENT_TOKEN = f"agent-{(self.SECRET_KEY or '')[:8]}"
+            print("WARNING: AGENT_TOKEN not set. Using derived token from SECRET_KEY prefix. Set AGENT_TOKEN explicitly in production!")
 
 settings = Settings()

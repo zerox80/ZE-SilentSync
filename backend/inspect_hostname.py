@@ -1,4 +1,4 @@
-EN from sqlmodel import Session, select
+from sqlmodel import Session, select
 from database import engine
 from models import Machine
 

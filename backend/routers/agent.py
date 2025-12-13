@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlmodel import Session, select
+from sqlmodel import Session, select, or_
 from datetime import datetime, timedelta
 from database import get_session
 from models import Machine, Deployment, Software, AgentLog
@@ -41,15 +41,10 @@ def heartbeat(
             machine_by_host = session.exec(statement_host).first()
             
             if machine_by_host:
-                # Machine exists with different MAC -> Update MAC
-                print(f"WARNING: Hostname {hostname} found with different MAC. Updating MAC from {machine_by_host.mac_address} to {mac_address}.")
-                machine = machine_by_host
-                machine.mac_address = mac_address
-                machine.last_seen = datetime.utcnow()
-                machine.os_info = os_info
-                if settings.AGENT_ONLY:
-                     machine.ou_path = ou_path
-                session.add(machine)
+                # Machine exists with different MAC -> Prevent Hijacking unless explicit admin action?
+                # For now, we BLOCK it to fix the security hole.
+                print(f"SECURITY WARNING: Hostname {hostname} collision. Request MAC: {mac_address}, Known MAC: {machine_by_host.mac_address}")
+                raise HTTPException(status_code=409, detail="Hostname conflict. Contact Administrator.")
             else:
                 # New Machine
                 machine = Machine(
@@ -69,22 +64,20 @@ def heartbeat(
                 
                 if machine_by_host:
                     # Hostname collision! 
-                    # Scenario: We have Machine A (hostname=Target) and Machine B (mac=Current).
-                    # We want to be Machine A, but with Machine B's MAC.
-                    # We must delete Machine B (current record) and update Machine A.
-                    print(f"WARNING: Merging machine {machine.hostname} ({machine.mac_address}) into {machine_by_host.hostname} ({machine_by_host.mac_address})")
+                    # WE MUST BLOCK THIS too to prevent renaming into an existing target.
+                    print(f"SECURITY WARNING: Machine {machine.mac_address} tried to change hostname to {hostname}, which is already claimed by {machine_by_host.mac_address}")
+                    raise HTTPException(status_code=409, detail="Hostname conflict. Contact Administrator.")
                     
-                    # Delete the current machine (Machine B)
-                    session.delete(machine)
-                    session.flush() # Ensure deletion happens before update to avoid MAC collision if we were to swap
-                    
-                    # Switch to Machine A
-                    machine = machine_by_host
-                    machine.mac_address = mac_address # Update to new MAC
+                    # OLD LOGIC REMOVED security fix
+                    # session.delete(machine) ...
             
             machine.last_seen = datetime.utcnow()
             machine.hostname = hostname
             machine.os_info = os_info
+            # Ip Address Security / IDOR prep
+            if request.client and request.client.host:
+                 machine.ip_address = request.client.host
+                 
             if settings.AGENT_ONLY:
                  machine.ou_path = ou_path
             session.add(machine)
@@ -111,12 +104,57 @@ def heartbeat(
         print(f"DEBUG: Heartbeat for {hostname} (ID: {machine.id}). Checking deployments...")
     
         # 1. Get relevant deployments
-        # Optimization: Filter by machine ID or OU type in SQL
+        # Optimization: Filter IN SQL
+        
+        # Calculate parent OUs for OU targeting
+        parent_ous = []
+        if machine.ou_path and machine.ou_path != "Unknown":
+            # Simple DN parsing
+            # CN=PC1,OU=Sales,DC=example -> [OU=Sales,DC=example, DC=example]
+            # Split by comma (naive, but usually works for AD unless comma in name)
+            parts = machine.ou_path.split(",")
+            # If start with CN=, skip first part
+            start_idx = 1 if parts[0].upper().startswith("CN=") else 0
+            
+            # Reconstruct parents
+            current_dn = machine.ou_path
+            if start_idx == 1:
+                # Remove CN=...
+                current_dn = ",".join(parts[1:])
+                parent_ous.append(current_dn)
+                
+            # Now iterate upwards?
+            # Actually, standard AD structure: OU=A,OU=B,DC=C
+            # We want all suffixes.
+            # simpler:
+            parts = current_dn.split(",")
+            for i in range(len(parts)):
+                 # Only if it looks like a valid component (OU= or DC=)
+                 dn_candidate = ",".join(parts[i:])
+                 if dn_candidate:
+                     parent_ous.append(dn_candidate)
+        
+        # Deployment Target Values we care about:
+        # 1. Machine ID
+        # 2. Hostname
+        # 3. CN=Hostname (prefix)
+        # 4. Any parent OU
+        
+        target_machine_values = [str(machine.id), machine.hostname, f"CN={machine.hostname}"]
+        
         statement = select(Deployment).where(
-            ((Deployment.target_type == "machine") & (Deployment.target_value == str(machine.id))) |
-            (Deployment.target_type == "ou")
+            or_(
+                (Deployment.target_type == "machine") & (Deployment.target_value.in_(target_machine_values)),
+                (Deployment.target_type == "ou") & (Deployment.target_value.in_(parent_ous))
+            )
         )
         potential_deployments = session.exec(statement).all()
+        
+        # Sort deployments to prioritize Machine (Specific) over OU (General)
+        # Assuming 'target_type' is "machine" or "ou". 
+        # We want "machine" first.
+        potential_deployments.sort(key=lambda d: 0 if d.target_type == "machine" else 1)
+        
         print(f"DEBUG: Found {len(potential_deployments)} potential deployments.")
         
         from models import MachineSoftwareLink
@@ -130,9 +168,19 @@ def heartbeat(
             
             # Target Check
             if dep.target_type == "machine":
-                # Already filtered by SQL, but safe to keep check
+                # Check ID Match (strict) OR Hostname Match (loose) OR DN Match (loose)
+                # The backend might store just ID, or DN.
                 if dep.target_value == str(machine.id):
                     is_target = True
+                elif dep.target_value.lower() == machine.hostname.lower():
+                     is_target = True
+                elif dep.target_value.lower().startswith(f"cn={machine.hostname}".lower()):
+                     # Check if it is exact match or comma follows (to avoid prefix matching like PC1 matching PC10)
+                     val = dep.target_value.lower()
+                     prefix = f"cn={machine.hostname}".lower()
+                     if val == prefix or val.startswith(prefix + ","):
+                         is_target = True
+                     
             elif dep.target_type == "ou":
                 # Robust OU matching
                 if machine.ou_path and dep.target_value:
@@ -170,7 +218,16 @@ def heartbeat(
                         # For FAILED, we should allow retry after some time (e.g., 1 hour)
                         if link:
                             if link.status == "installed":
-                                continue
+                                # VERSION CHECK FIX
+                                installed_ver = link.installed_version
+                                target_ver = dep.software.version
+                                if installed_ver and installed_ver == target_ver:
+                                     # Exact same version installed
+                                     continue
+                                else:
+                                     print(f"DEBUG: Update detected for {dep.software.name}. Installed: {installed_ver}, Target: {target_ver}")
+                                     # Proceed to install (update)
+                                     pass
                             elif link.status == "failed":
                                 # Retry after 1 hour
                                 if datetime.utcnow() - link.last_updated < timedelta(hours=1):
@@ -185,8 +242,9 @@ def heartbeat(
     
                     download_url = dep.software.download_url
                     if download_url and download_url.startswith("/"):
-                        # Construct absolute URL from request
-                        base_url = str(request.base_url).rstrip("/")
+                        # Construct absolute URL using secure BASE_URL
+                        # Fix: Host Header Injection validation
+                        base_url = settings.BASE_URL.rstrip("/")
                         download_url = f"{base_url}{download_url}"
     
                     tasks.append({
@@ -252,6 +310,8 @@ def acknowledge_task(
             link.status = "uninstalled" # or delete the link? Keeping it as history is better.
         else:
             link.status = "installed"
+            if deployment.software:
+                link.installed_version = deployment.software.version
     else:
         link.status = "failed"
         
@@ -264,6 +324,7 @@ def acknowledge_task(
 
 @router.post("/log")
 def log_agent_event(
+    request: Request,
     mac_address: str,
     level: str,
     message: str,
@@ -271,7 +332,17 @@ def log_agent_event(
 ):
     statement = select(Machine).where(Machine.mac_address == mac_address)
     machine = session.exec(statement).first()
+    
     if machine:
+        # IDOR Security Check
+        # If we have an IP recorded, we can check it.
+        # This is a basic check.
+        if machine.ip_address and request.client and request.client.host:
+            if machine.ip_address != request.client.host:
+                print(f"SECURITY WARNING: Log attempt for {mac_address} from unauthorized IP {request.client.host} (Expected {machine.ip_address})")
+                # We could raise 403, or just drop the log silently to not leak info.
+                return {"status": "ignored"}
+                
         log = AgentLog(machine_id=machine.id, level=level, message=message)
         session.add(log)
         session.commit()

@@ -7,6 +7,7 @@ class MachineSoftwareLink(SQLModel, table=True):
     machine_id: Optional[int] = Field(default=None, foreign_key="machine.id", primary_key=True)
     software_id: Optional[int] = Field(default=None, foreign_key="software.id", primary_key=True)
     status: str = Field(default="pending") # pending, installing, installed, failed
+    installed_version: Optional[str] = None
     last_updated: datetime = Field(default_factory=datetime.utcnow)
 
 class SoftwareDependency(SQLModel, table=True):

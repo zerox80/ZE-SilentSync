@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+import asyncio
 from sqlmodel import Session, select, SQLModel
 from typing import List
 from database import get_session
 from auth import get_current_admin
 from models import Software, Deployment, Machine, Admin, MachineSoftwareLink
+from datetime import datetime
 from ldap_service import ldap_service
 
 router = APIRouter(prefix="/api/v1/management", tags=["management"], dependencies=[Depends(get_current_admin)])
@@ -81,7 +83,19 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
     for software_id in request.software_ids:
         for target_dn in request.target_dns:
             # Simple heuristic for target type, similar to frontend
-            target_type = "ou" if "OU=" in target_dn else "machine"
+            # OUs start with OU= or DC=, Machines start with CN= (usually)
+            # Improved heuristic: OUs explicitly start with OU= or DC=, but we must be careful.
+            # Computers often start with CN=...OU=...
+            # If it starts with OU= or DC=, it is likely an OU root.
+            # If it starts with CN=, it is a machine.
+            target_upper = target_dn.upper()
+            if target_upper.startswith("CN="):
+                target_type = "machine"
+            elif target_upper.startswith(("OU=", "DC=")):
+                target_type = "ou"
+            else:
+                # Fallback to simple machine ID (integer) assumption if no DN structure
+                 target_type = "machine"
             
             deployment = Deployment(
                 software_id=software_id,
@@ -98,14 +112,39 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                      # For machine targets, target_dn is expected to be the machine ID or hostname. 
                      # Ideally we should resolve this properly. Assuming it is an ID for simplicity as per frontend.
                      try:
-                        machine_id = int(target_value)
+                        machine_id = int(target_dn)
                         machines = [session.get(Machine, machine_id)]
                      except ValueError:
                         # Maybe it is a DN or Hostname?
-                        machines = session.exec(select(Machine).where(Machine.hostname == target_value)).all()
+                        # Try to match hostname directly or extract from CN=...
+                        hostname_candidate = target_dn
+                        if target_dn.upper().startswith("CN="):
+                            # Extract CN value: CN=Hostname,OU=...
+                            parts = target_dn.split(",")
+                            if parts:
+                                kv = parts[0].split("=")
+                                if len(kv) == 2:
+                                    hostname_candidate = kv[1]
+                        
+                        machines = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
+                        if not machines and hostname_candidate != target_dn:
+                             # Try raw match
+                             machines = session.exec(select(Machine).where(Machine.hostname == target_dn)).all()
                 else: 
-                     # OU Target
-                     machines = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
+                     # OU Target matches if it ends with the DN, but we must ensure it's a component boundary.
+                     # e.g. "OU=Sales" matches "...CN=PC1,OU=Sales" but NOT "...OU=PreSales"
+                     # Simple check: Ends with ",target_dn" OR is exactly "target_dn"
+                     machines = []
+                     # We can't easily do this purely in SQL with 'endswith' correctly without regex support in DB.
+                     # So we fetch potential matches and filter in python OR assume users provide valid DNs.
+                     # Let's try a slightly safer SQL approach if possible, or just strict suffix check.
+                     # Assuming basic structure:
+                     
+                     # Fetch all machines (or filter roughly)
+                     candidates = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
+                     for m in candidates:
+                         if m.ou_path == target_dn or m.ou_path.endswith("," + target_dn):
+                             machines.append(m)
 
                 for machine in machines:
                     if not machine: continue
@@ -150,8 +189,13 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
         raise HTTPException(status_code=400, detail="Invalid file extension. Only .msi, .exe, .zip, .7z are allowed.")
 
     file_path = os.path.join(UPLOAD_DIR, filename)
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    
+    # Run blocking I/O in a worker thread and ensure the target file handle is closed.
+    def _write_upload():
+        with open(file_path, "wb") as out_file:
+            shutil.copyfileobj(file.file, out_file)
+
+    await asyncio.to_thread(_write_upload)
         
     # Return the URL where it can be accessed
     # In production, this should be a full URL or relative to a configured base

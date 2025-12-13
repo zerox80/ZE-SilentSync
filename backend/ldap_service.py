@@ -101,41 +101,68 @@ class LDAPService:
             conn.search(settings.AD_BASE_DN, '(objectClass=computer)', attributes=['distinguishedName', 'name'])
             computers = [entry for entry in conn.entries]
             
-            # Build a simplified tree structure (Flat list for now for simplicity, or nested if we had more time)
-            # For this MVP, we will return a flat structure that the frontend can handle or we structure it simply.
+            # Build a hierarchical tree structure
             
-            # NOTE: Building a perfect nested tree from flat LDAP DNs is complex.
-            # We will return a simplified structure where top level keys are OUs.
-            
-            tree = {}
+            # Map all OUs by DN
+            ou_map = {}
             for ou in ous:
                 ou_dn = str(ou.distinguishedName)
-                ou_name = str(ou.name)
-                tree[ou_dn] = {"type": "ou", "name": ou_name, "children": []}
-                
+                # Ensure unified casing for keys if needed, but AD is usually case-insensitive but consistent.
+                # We'll use the DN as is.
+                ou_map[ou_dn] = {
+                    "id": ou_dn,
+                    "name": str(ou.name),
+                    "type": "ou",
+                    "children": []
+                }
+            
+            # Root node (Domain)
+            # Assuming AD_BASE_DN is the domain root like DC=example,DC=com
+            root_dn = settings.AD_BASE_DN
+            root_node = {
+                "id": root_dn,
+                "name": root_dn.replace("DC=", "").replace(",", "."), # Simple name from DN
+                "type": "domain",
+                "children": []
+            }
+            
+            # Helper to find parent DN
+            def get_parent_dn(dn):
+                parts = dn.split(",")
+                if len(parts) > 1:
+                    return ",".join(parts[1:])
+                return None
+
+            # Attach OUs to their parents
+            for dn, node in ou_map.items():
+                parent_dn = get_parent_dn(dn)
+                if parent_dn == root_dn:
+                    root_node["children"].append(node)
+                elif parent_dn in ou_map:
+                    ou_map[parent_dn]["children"].append(node)
+                else:
+                    # Parent might be a container we didn't fetch or it's out of scope
+                    # For safety, add to root or ignore. Let's add to root to be safe.
+                    if dn != root_dn: # Avoid self-loop if something is weird
+                         root_node["children"].append(node)
+
+            # Attach Computers to their OUs
             for comp in computers:
                 comp_dn = str(comp.distinguishedName)
                 comp_name = str(comp.name)
-                # Find parent OU
-                # Find parent OU
-                # Robust parent resolution:
-                # Split by comma, remove the first component (CN=...), and join back.
-                # This works for standard AD DNs.
-                parts = comp_dn.split(",")
-                if len(parts) > 1:
-                    parent_dn = ",".join(parts[1:])
+                parent_dn = get_parent_dn(comp_dn)
+                
+                comp_node = {"id": comp_dn, "name": comp_name, "type": "computer"}
+                
+                if parent_dn == root_dn:
+                    root_node["children"].append(comp_node)
+                elif parent_dn in ou_map:
+                    ou_map[parent_dn]["children"].append(comp_node)
                 else:
-                    parent_dn = "Root"
-
-                if parent_dn in tree:
-                    tree[parent_dn]["children"].append({"name": comp_name, "type": "computer", "dn": comp_dn})
-                else:
-                    # Root or unknown parent
-                    if "Root" not in tree:
-                         tree["Root"] = {"type": "domain", "children": []}
-                    tree["Root"]["children"].append({"name": comp_name, "type": "computer", "dn": comp_dn})
-                    
-            return tree
+                    # Fallback
+                    root_node["children"].append(comp_node)
+            
+            return root_node
             
         except Exception as e:
             print(f"LDAP Error: {e}")

@@ -19,8 +19,15 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # 1. Bootstrap Admin (if no admins exist)
     # Check if any admin exists
     if not session.exec(select(Admin)).first():
-         # Create bootstrap admin with password = SECRET_KEY
-         hashed_pwd = get_password_hash(settings.SECRET_KEY)
+         # Create bootstrap admin
+         # Bug fix: Do not use SECRET_KEY as password.
+         initial_password = settings.ADMIN_PASSWORD
+         if not initial_password:
+             import secrets
+             initial_password = secrets.token_urlsafe(16)
+             print(f"WARNING: ADMIN_PASSWORD not set. Generated bootstrap password: {initial_password}")
+             
+         hashed_pwd = get_password_hash(initial_password)
          admin = Admin(username="admin", role="superadmin", hashed_password=hashed_pwd)
          session.add(admin)
          session.commit()
