@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+import re
 from ldap3 import Server, Connection, ALL, SUBTREE
 from sqlmodel import Session, select
 from config import settings
@@ -128,7 +129,8 @@ class LDAPService:
             
             # Helper to find parent DN
             def get_parent_dn(dn):
-                parts = dn.split(",")
+                # Split by comma NOT preceded by backslash
+                parts = re.split(r'(?<!\\),', dn)
                 if len(parts) > 1:
                     return ",".join(parts[1:])
                 return None

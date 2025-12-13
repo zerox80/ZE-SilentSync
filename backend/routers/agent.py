@@ -5,6 +5,7 @@ from database import get_session
 from models import Machine, Deployment, Software, AgentLog
 from auth import verify_agent_token
 import secrets
+import re
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"], dependencies=[Depends(verify_agent_token)])
 
@@ -129,7 +130,8 @@ def heartbeat(
             # Simple DN parsing
             # CN=PC1,OU=Sales,DC=example -> [OU=Sales,DC=example, DC=example]
             # Split by comma (naive, but usually works for AD unless comma in name)
-            parts = machine.ou_path.split(",")
+            # Fix: Use regex to handle escaped commas
+            parts = re.split(r'(?<!\\),', machine.ou_path)
             # If start with CN=, skip first part
             start_idx = 1 if parts[0].upper().startswith("CN=") else 0
             
@@ -144,7 +146,7 @@ def heartbeat(
             # Actually, standard AD structure: OU=A,OU=B,DC=C
             # We want all suffixes.
             # simpler:
-            parts = current_dn.split(",")
+            parts = re.split(r'(?<!\\),', current_dn)
             for i in range(len(parts)):
                  # Only if it looks like a valid component (OU= or DC=)
                  dn_candidate = ",".join(parts[i:])

@@ -5,6 +5,7 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from sqlmodel import Session, select
+import secrets
 from config import settings
 from database import get_session
 from models import Admin
@@ -55,7 +56,7 @@ async def get_current_admin(token: str = Depends(oauth2_scheme), session: Sessio
 
 async def verify_agent_token(token: str = Depends(api_key_header)):
     # Use the configured AGENT_TOKEN
-    if token != settings.AGENT_TOKEN:
+    if not token or not secrets.compare_digest(token, settings.AGENT_TOKEN):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Agent Token",

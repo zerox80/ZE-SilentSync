@@ -96,7 +96,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             # Computers often start with CN=...OU=...
             # If it starts with OU= or DC=, it is likely an OU root.
             # If it starts with CN=, it is a machine.
-            target_upper = target_dn.upper()
+            target_upper = target_dn.strip().upper()
             if target_upper.startswith("CN="):
                 target_type = "machine"
             elif target_upper.startswith(("OU=", "DC=")):
@@ -118,15 +118,17 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 # Efficiently reset links
                 if target_type == "machine":
                      # For machine targets, target_dn is expected to be the machine ID or hostname. 
-                     # Ideally we should resolve this properly. Assuming it is an ID for simplicity as per frontend.
+                     machines = []
                      try:
                         machine_id = int(target_dn)
-                        machines = [session.get(Machine, machine_id)]
+                        found = session.get(Machine, machine_id)
+                        if found:
+                             machines = [found]
                      except ValueError:
                         # Maybe it is a DN or Hostname?
                         # Try to match hostname directly or extract from CN=...
                         hostname_candidate = target_dn
-                        if target_dn.upper().startswith("CN="):
+                        if target_dn.upper().strip().startswith("CN="):
                             # Extract CN value: CN=Hostname,OU=...
                             parts = target_dn.split(",")
                             if parts:
