@@ -58,6 +58,15 @@ def heartbeat(
                 session.add(machine)
         else:
             # Machine found by MAC
+            
+            # SECURITY FIX: Verify Machine Token if it exists
+            if machine.api_key:
+                token_header = request.headers.get("X-Machine-Token")
+                # Handle case where header might be missing or different
+                if not token_header or token_header != machine.api_key:
+                     print(f"SECURITY ALERT: Invalid Machine Token for heartbeat from {mac_address}")
+                     raise HTTPException(status_code=403, detail="Invalid Machine Token")
+
             if machine.hostname != hostname:
                 # Hostname changed. Check if new hostname is already taken.
                 statement_host = select(Machine).where(Machine.hostname == hostname)
@@ -268,6 +277,8 @@ def heartbeat(
         print(f"DEBUG: Returning {len(tasks)} tasks.")
         return {"status": "ok", "tasks": tasks, "machine_token": machine.api_key}
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         import traceback
         error_msg = f"ERROR: Heartbeat failed for {data.hostname}: {e}\n{traceback.format_exc()}"
         print(error_msg)
