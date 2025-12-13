@@ -54,7 +54,7 @@ class LDAPService:
              from ldap3.core.exceptions import LDAPBindError
              
              try:
-                 server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
+                 server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
                  
                  # 1. Search for User DN
                  # Bind with service account first
@@ -99,7 +99,7 @@ class LDAPService:
 
         # Real LDAP
         try:
-             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
+             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
              with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
                  # Search for computer
                  conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={escape_filter_chars(hostname)}))', attributes=['distinguishedName'])
@@ -163,7 +163,7 @@ class LDAPService:
     def _fetch_real_ad_structure(self) -> Dict[str, Any]:
         """Connects to real AD and builds the tree."""
         try:
-            server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
+             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
             # Fix: Use context manager to ensure unbind
             with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True, raise_exceptions=True) as conn:
                 # Search for OUs and Computers
@@ -202,28 +202,19 @@ class LDAPService:
             # Helper to find parent DN
             def get_parent_dn(dn):
                 try:
-                    # Fix: Use more robust DN parsing that handles escapes correctly
-                    parsed = parse_dn(dn)
-                    if len(parsed) > 1:
-                        # Reconstruct the parent DN
-                        # parsed is list of (attr, val, sep)
-                        # We want to skip the first RDN (index 0) and reconstruct the rest.
-                        
-                        parent_parts = []
-                        for i in range(1, len(parsed)):
-                            attr, val, sep = parsed[i]
-                            # escape_dn_chars handles the value escaping (e.g. ',' -> '\,')
-                            # We must reconstruct the RDN exactly as it should appear in the DN.
-                            
-                            # Note: sep is the separator that follows THIS RDN.
-                            # For the last RDN, sep might be empty.
-                            
-                            part = f"{attr}={escape_dn_chars(val)}"
-                            if sep:
-                                part += sep
-                            parent_parts.append(part)
-                            
-                        return "".join(parent_parts)
+                     # Fix Bug 1: Use robust DN parsing
+                     parsed = parse_dn(dn)
+                     if len(parsed) > 1:
+                         # Reconstruct parent by skipping the first RDN
+                         parent_parts = []
+                         for i in range(1, len(parsed)):
+                             attr, val, sep = parsed[i]
+                             # We must re-escape special characters in the value
+                             # escape_dn_chars handles ',', '+', '"', '\', '<', '>', ';', etc.
+                             escaped_val = escape_dn_chars(val)
+                             parent_parts.append(f"{attr}={escaped_val}")
+                         
+                         return ",".join(parent_parts)
                 except Exception:
                     pass
                 return None

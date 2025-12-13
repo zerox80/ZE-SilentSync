@@ -1,6 +1,8 @@
 from typing import Optional, List
 from datetime import datetime, timezone
 from sqlmodel import Field, SQLModel, Relationship
+from sqlalchemy import UniqueConstraint
+
 
 # --- Join Tables ---
 class MachineSoftwareLink(SQLModel, table=True):
@@ -38,6 +40,7 @@ class Machine(SQLModel, table=True):
     deployments: List["Deployment"] = Relationship(back_populates="machine")
 
 class Software(SQLModel, table=True):
+    __table_args__ = (UniqueConstraint("name", "version", name="unique_software_version"),)
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str = Field(index=True)
     version: str

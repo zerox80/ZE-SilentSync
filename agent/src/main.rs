@@ -175,7 +175,8 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     
     if task.task_type == "uninstall" {
         info!("Executing UNINSTALL...");
-        if task.download_url.to_lowercase().ends_with(".msi") {
+        // Bug Fix 3: Check file_name (cleaned) instead of raw URL
+        if file_name.to_lowercase().ends_with(".msi") {
             // For MSI, we use msiexec /x <file> /qn
             command_path = std::path::PathBuf::from("msiexec");
             args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
@@ -185,7 +186,8 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     } else {
         // INSTALL
         info!("Executing installer with args: {}", task.silent_args);
-        if task.download_url.to_lowercase().ends_with(".msi") {
+        // Bug Fix 3: Check file_name (cleaned) instead of raw URL
+        if file_name.to_lowercase().ends_with(".msi") {
              info!("Detected MSI installer. Using msiexec.");
              command_path = std::path::PathBuf::from("msiexec");
              // msiexec /i <file> <args>

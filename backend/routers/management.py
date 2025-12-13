@@ -23,6 +23,10 @@ def create_software(software: Software, session: Session = Depends(get_session),
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
              raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
         
+        # Bug Fix 9: Prevent credentials in URL
+        if "@" in url and not url.startswith("/static/"):
+             raise HTTPException(status_code=400, detail="Security Error: Credentials in URL are not allowed.")
+
         if url.startswith("/static/") and ".." in url:
              raise HTTPException(status_code=400, detail="Path traversal detected in download_url")
 
@@ -30,6 +34,9 @@ def create_software(software: Software, session: Session = Depends(get_session),
         url = software.icon_url.lower()
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
             raise HTTPException(status_code=400, detail="Invalid icon_url. Must start with http://, https://, or /static/")
+            
+        if url.startswith("/static/") and ".." in url:
+             raise HTTPException(status_code=400, detail="Path traversal detected in icon_url")
 
     # Bug Fix: Enforce RBAC
     if admin.role not in ["admin", "superadmin"]:
@@ -100,18 +107,28 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     import os
     
     # Check Download URL
+    # Bug Fix 6: Race Condition handling.
+    # Strategy: Rename file to .deleted *before* commit. 
+    # If B inserts reference to 'file' during this, it will point to non-existent file (Safe violation).
+    # If commit fails, we rename back.
+    # If commit succeeds, we delete .deleted.
+    
+    session.delete(software)
+    # Flush to ensure delete is registered
+    session.flush()
+    
+    files_to_delete = []
+    renamed_files = [] # Tuples of (original, temp)
+    import os
+    import shutil
+    
+    # Check Download URL
     if software.download_url and software.download_url.startswith("/static/"):
-        # Check if ANY OTHER software still uses this URL
-        # We query for any software with this URL. Since we deleted 'software', 
-        # it shouldn't be returned unless implicit rollback? No, flush handles it.
         usage_count = session.exec(select(Software).where(Software.download_url == software.download_url)).all()
-        
         if len(usage_count) == 0:
             filename = os.path.basename(software.download_url)
-            # Basic validation
             if filename and not filename.startswith(".") and "/" not in filename:
-                 file_path = os.path.join("uploads", filename)
-                 files_to_delete.append(file_path)
+                 files_to_delete.append(os.path.join("uploads", filename))
     
     # Check Icon URL
     if software.icon_url and software.icon_url.startswith("/static/"):
@@ -119,64 +136,40 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
          if len(usage_count) == 0:
             filename = os.path.basename(software.icon_url)
             if filename and not filename.startswith(".") and "/" not in filename:
-                 file_path = os.path.join("uploads", filename)
-                 files_to_delete.append(file_path)
+                 files_to_delete.append(os.path.join("uploads", filename))
 
-    # Commit the DB changes. 
-    # Note: If commit fails, we haven't deleted files yet.
-    # If commit succeeds, we delete files immediately.
-    # Ideally, we'd delete files *during* commit, but we can't.
-    # Be aware: If we delete files now, and commit fails, we are in trouble?
-    # No, we delete files AFTER commit? 
-    # If we delete AFTER commit, we have the original race condition (someone inserted while we committed?).
-    # SQLite lock is released on commit.
-    # So we MUST delete files *while* locked? 
-    # But files aren't transactional.
-    # If we delete file, then commit fails (Wait, why would commit fail? Constraint error? We deleted stuff already).
-    # Commit failure is rare here. The Race Condition is common.
-    # SO: We decide to Delete Files *after* commit but rely on the fact that we checked *inside* the lock.
-    # WAIT. If we commit, lock is released. B inserts.
-    # The check we did inside is verified. But invalid the moment we commit?
-    
-    # Correct SQLite Strategy:
-    # 1. Delete Row. (Lock held).
-    # 2. Check Others. (Lock held). If exist, don't delete.
-    # 3. If None exist -> We *intend* to delete.
-    # 4. Commit. (Lock Released).
-    # 5. Delete File.
-    
-    # Is it possible B inserted *between* 4 and 5?
-    # B Inserts Row referencing File.
-    # A Deletes File.
-    # B points to nothing.
-    # YES.
-    
-    # To fix this, we'd need a "File Lock" or "Deleted Flag" on the file itself?
-    # Or, we accept that "Commit" creates the truth.
-    # If B inserts, B's transaction *starts* after A's commit? (if serialized).
-    # If B starts before, B waits for A.
-    # A commits (File is "Unused" in DB).
-    # B proceeds. B inserts reference.
-    # A runs os.remove.
-    # B is screwed.
-    
-    # The only way to stop B is if B checks file existence? 
-    # Even then, TOCTOU.
-    
-    # We will stick to the "Check Inside Transaction" logic, which minimizes the window, 
-    # but strictly speaking, file system operations are separate.
-    # However, by flushing and checking, we ensure Logic correctness regarding *current* state.
-    
-    session.commit()
-    
-    # Execute deletion
+    # Rename phase
     for fpath in files_to_delete:
-        if os.path.exists(fpath) and os.path.isfile(fpath):
-            try:
-                os.remove(fpath)
-                print(f"Deleted file: {fpath}")
-            except Exception as e:
-                print(f"Error deleting file {fpath}: {e}")
+         try:
+             if os.path.exists(fpath):
+                 temp_path = fpath + ".deleted"
+                 os.rename(fpath, temp_path)
+                 renamed_files.append((fpath, temp_path))
+         except Exception as e:
+             print(f"Error renaming {fpath} for deletion: {e}")
+             # If rename fails, we risk race. But we proceed.
+
+    try:
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        # Rename back
+        for orig, temp in renamed_files:
+             try:
+                 if os.path.exists(temp):
+                     os.rename(temp, orig)
+             except: 
+                 pass
+        raise e
+    
+    # Final Delete
+    for orig, temp in renamed_files:
+         try:
+             if os.path.exists(temp):
+                 os.remove(temp)
+                 print(f"Deleted file: {orig}")
+         except Exception as e:
+             print(f"Error deleting temp file {temp}: {e}")
 
     return {"status": "deleted", "id": software_id}
 
@@ -207,6 +200,15 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
     # For simplicity, we just create a Deployment record. 
     # In a real app, if target is OU, we might expand to all machines in that OU immediately or let a background task do it.
     
+    # Bug Fix 7: Validate icon_url logic (in create_software, scrolling up)
+    # Wait, I need to target create_deployment separately or use multi-replace? 
+    # The tool call targets create_deployment logic mostly.
+    # Let me fix create_deployment first.
+    
+    # Bug Fix 2: Enforce RBAC
+    if admin.role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Insufficient privileges.")
+
     deployment = Deployment(
         software_id=software_id,
         target_value=target_dn,
@@ -214,6 +216,31 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
         action=action,
         created_by=admin.id
     )
+    
+    # Bug Fix 6: Validate Target
+    if target_type == "machine":
+        # Check if machine ID or Hostname exists
+        # Try ID first
+        if target_dn.isdigit():
+             m = session.get(Machine, int(target_dn))
+             if not m:
+                  raise HTTPException(status_code=404, detail=f"Machine ID {target_dn} not found")
+        else:
+             # Try Hostname
+             m = session.exec(select(Machine).where(Machine.hostname == target_dn)).first()
+             if not m:
+                   # Try CN=Hostname
+                   if target_dn.lower().startswith("cn="):
+                        hostname = target_dn[3:] # Simple strip
+                        m = session.exec(select(Machine).where(Machine.hostname == hostname)).first()
+                   
+                   if not m:
+                        raise HTTPException(status_code=404, detail=f"Machine {target_dn} not found")
+    elif target_type == "ou":
+         # Basic validation: ensure it looks like a DN
+         if not ("dc=" in target_dn.lower() or "ou=" in target_dn.lower()):
+              raise HTTPException(status_code=400, detail="Invalid OU DN format")
+
     session.add(deployment)
     
     # Audit Log
@@ -255,69 +282,77 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
     # 1. Resolve all target machines once
     machines_dict = {} # Use dict for uniqueness by ID: {id: Machine}
 
-    for target_dn in request.target_dns:
-        if not target_dn or not target_dn.strip():
-            continue
-
-        # Heuristic for target type
-        target_upper = target_dn.strip().upper()
-        target_type = "machine" # default fallback
+    # 1. Bulk Machine Resolution (Fix Bug 10: N+1)
+    machines_dict = {}
+    
+    # Pre-classify targets
+    target_ids = []
+    target_hostnames = [] # (hostname, original_dn)
+    target_ous = [] # dn
+    
+    for dn in request.target_dns:
+        if not dn or not dn.strip(): continue
+        dn_clean = dn.strip()
+        dn_u = dn_clean.upper()
         
-        if target_dn.strip().isdigit():
-             target_type = "machine"
-        elif target_upper.startswith("CN="):
-            # Check if machine exists with this DN or Hostname
-            machine_chk = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn) | (Machine.hostname == target_dn))).first()
-            if machine_chk:
-                 target_type = "machine"
-            else:
-                target_type = "ou"
-        elif target_upper.startswith(("OU=", "DC=")):
-            target_type = "ou"
-
-        # Create Deployment Records (one per Soft x Target combo)
-        for software_id in request.software_ids:
-            deployment = Deployment(
-                software_id=software_id,
-                target_value=target_dn,
-                target_type=target_type,
-                action=request.action,
-                created_by=admin.id
-            )
-            session.add(deployment)
+        if dn_clean.isdigit():
+             target_ids.append(int(dn_clean))
+        elif dn_u.startswith("CN="):
+             # Parse hostname
+             parts = re.split(r'(?<!\\\\),', dn_clean)
+             if parts:
+                 kv = parts[0].split("=", 1)
+                 if len(kv) == 2:
+                     target_hostnames.append((kv[1].replace(r'\,', ','), dn_clean))
+        elif dn_u.startswith(("OU=", "DC=")):
+             target_ous.append(dn_clean)
+        else:
+             # Fallback: Treat as hostname?
+             target_hostnames.append((dn_clean, dn_clean))
+             
+    # Fetch IDs
+    if target_ids:
+        ms = session.exec(select(Machine).where(Machine.id.in_(target_ids))).all()
+        for m in ms: machines_dict[m.id] = m
         
-        # Resolve Machines for Link Updates
-        found_machines = []
-        if target_type == "machine":
-             try:
-                machine_id = int(target_dn)
-                found = session.get(Machine, machine_id)
-                if found: found_machines.append(found)
-             except ValueError:
-                # Try Hostname match (CN=...)
-                hostname_candidate = target_dn
-                if target_upper.startswith("CN="):
-                    parts = re.split(r'(?<!\\\\),', target_dn)
-                    if parts:
-                        kv = parts[0].split("=", 1)
-                        if len(kv) == 2:
-                            hostname_candidate = kv[1].replace(r'\,', ',')
-                
-                ms = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
-                if not ms and hostname_candidate != target_dn:
-                     ms = session.exec(select(Machine).where(Machine.hostname == target_dn)).all()
-                found_machines.extend(ms)
-
-        else: # target_type == "ou"
-             # Fetch all machines in this OU (recursive suffix check)
-             candidates = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
-             for m in candidates:
-                 # Fix: Strict Suffix Match to avoid partial OU matches (e.g. 'est,DC=com' matching 'Test,DC=com')
-                 if m.ou_path == target_dn or m.ou_path.endswith("," + target_dn):
-                     found_machines.append(m)
-
-        for m in found_machines:
-            machines_dict[m.id] = m
+    # Fetch Hostnames
+    if target_hostnames:
+        exact_names = [name for name, _ in target_hostnames]
+        # Chunking if too large
+        chunk_size = 500
+        for i in range(0, len(exact_names), chunk_size):
+             chunk = exact_names[i:i + chunk_size]
+             ms = session.exec(select(Machine).where(Machine.hostname.in_(chunk))).all()
+             for m in ms: machines_dict[m.id] = m
+             
+    # Fetch OUs (Still Iterative or OR'd, but efficient enough if few OUs)
+    for ou in target_ous:
+        # Recursive suffix match
+        ms = session.exec(select(Machine).where(Machine.ou_path.endswith(ou))).all()
+        for m in ms:
+             if m.ou_path == ou or m.ou_path.endswith("," + ou):
+                  machines_dict[m.id] = m
+                  
+    # Create Deployments
+    # Fix: Batch Add
+    new_deployments = []
+    for dn in request.target_dns:
+         # Determine type for DB record
+         t_type = "machine"
+         if dn.strip().upper().startswith(("OU=", "DC=")): t_type = "ou"
+         
+         for sid in request.software_ids:
+             new_deployments.append(Deployment(
+                 software_id=sid,
+                 target_value=dn,
+                 target_type=t_type,
+                 action=request.action,
+                 created_by=admin.id
+             ))
+    session.add_all(new_deployments)
+    session.flush() # Populate IDs not needed, but good practice
+    
+    # Proceed to Link Updates using machines_dict (already bulk resolved)
 
     # 2. Bulk Update/Create Links (Fix N+1)
     if not machines_dict:

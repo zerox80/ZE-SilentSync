@@ -6,6 +6,32 @@ from models import Machine, Deployment, Software, AgentLog
 from auth import verify_agent_token
 import secrets
 import re
+import threading
+from config import settings
+
+# Thread Safety Lock for Rate Limiters
+_rate_limit_lock = threading.Lock()
+
+def get_client_ip(req: Request) -> str:
+    """
+    Robust client IP extraction.
+    If TRUST_PROXY_HEADERS is enabled, prefers X-Real-IP, then X-Forwarded-For (first IP).
+    Otherwise falls back to direct client host.
+    """
+    if settings.TRUST_PROXY_HEADERS:
+        # Prefer X-Real-IP
+        real_ip = req.headers.get("x-real-ip")
+        if real_ip:
+            return real_ip.strip()
+        
+        # Then X-Forwarded-For
+        # Standard format: client, proxy1, proxy2
+        # We want the client (first one) if we trust the chain.
+        fwd = req.headers.get("x-forwarded-for")
+        if fwd:
+            return fwd.split(",")[0].strip()
+            
+    return req.client.host if req.client else "unknown"
 
 router = APIRouter(prefix="/api/v1/agent", tags=["agent"], dependencies=[Depends(verify_agent_token)])
 
@@ -26,6 +52,41 @@ def heartbeat(
         hostname = data.hostname
         mac_address = data.mac_address.lower() # Bug Fix: Normalize MAC Case
         os_info = data.os_info
+        
+        # Bug Fix 3: Rate Limiting for New Machine Creation (DoS Protection)
+        # We limit specific MACs or IPs?
+        # Limiting by IP for anonymous requests is good.
+        # Simple In-Memory Limiter
+        
+        client_ip = get_client_ip(request)
+        
+        # Global limiters should be outside function, but for simplicity/module scope:
+        if not hasattr(heartbeat, "rate_limit_store"):
+             heartbeat.rate_limit_store = {}
+             heartbeat.cleanup_time = datetime.now(timezone.utc)
+             
+        # Cleanup every minute
+        now = datetime.now(timezone.utc)
+        
+        # Thread Safety for Global Limiters
+        with _rate_limit_lock:
+            if (now - heartbeat.cleanup_time).total_seconds() > 60:
+                 heartbeat.rate_limit_store = {}
+                 # Fix Bug 3: Clear creation store to prevent memory leak
+                 if hasattr(heartbeat, "creation_limit_store"):
+                     heartbeat.creation_limit_store = {}
+                 heartbeat.cleanup_time = now
+            
+            # Rate Limit Key: Use MAC Address for Heartbeat (Fix NAT Issue)
+            # Only use IP if MAC is missing (unlikely here) or for Creation logic
+            limit_key = mac_address if mac_address else client_ip
+            
+            current_count = heartbeat.rate_limit_store.get(limit_key, 0)
+            # Bug Fix 7: Stricter Rate Limit (100/min instead of 2000)
+            if current_count > 100: 
+                 raise HTTPException(status_code=429, detail="Rate limit exceeded")
+            heartbeat.rate_limit_store[limit_key] = current_count + 1
+        
         # Find or create machine
         statement = select(Machine).where(Machine.mac_address == mac_address)
         machine = session.exec(statement).first()
@@ -55,6 +116,19 @@ def heartbeat(
             # Check if hostname already exists (to prevent Unique Constraint Error)
             statement_host = select(Machine).where(Machine.hostname == hostname)
             machine_by_host = session.exec(statement_host).first()
+            
+            # Bug Fix 3: Strict Rate Limit for Creation
+            # Store creation counts separately
+            if not hasattr(heartbeat, "creation_limit_store"):
+                 heartbeat.creation_limit_store = {}
+            
+            client_ip = get_client_ip(request)
+            with _rate_limit_lock:
+                created_count = heartbeat.creation_limit_store.get(client_ip, 0)
+                if created_count > 5: # Max 5 new machines per minute per IP
+                     print(f"DoS Protection: Blocking machine creation from {client_ip}")
+                     raise HTTPException(status_code=429, detail="Registration Rate Limit Exception")
+                heartbeat.creation_limit_store[client_ip] = created_count + 1
             
             if machine_by_host:
                 # Machine exists with different MAC -> Prevent Hijacking unless explicit admin action?
@@ -117,21 +191,12 @@ def heartbeat(
             machine.hostname = hostname
             machine.os_info = os_info
             # Ip Address Security / IDOR prep
-            # Ip Address Security / IDOR prep
-            # Fix: Trust X-Forwarded-For ONLY if configured (Security)
-            # For now, we disable it or treat it with caution. The previous "Trust" was too open.
-            # safe_proxy = settings.TRUSTED_PROXY_Count?
-            # We will prefer client.host unless explicit override logic is added.
-            if request.client and request.client.host:
-                 machine.ip_address = request.client.host
-            else:
-                 # Fallback for some proxies (but risky)
-                 if settings.TRUST_PROXY_HEADERS:
-                     forwarded = request.headers.get("x-forwarded-for")
-                     if forwarded:
-                          # Security Fix: Take the last IP in the chain (most reliable if proxy trusted)
-                          # Using [0] (client provided) allows spoofing.
-                          machine.ip_address = forwarded.split(",")[-1].strip()
+            # Bug Fix 1: Trust X-Forwarded-For ONLY if configured (Security)
+            # Use unified helper
+            resolved_ip = get_client_ip(request)
+            
+            if resolved_ip:
+                machine.ip_address = resolved_ip
                  
             # Fix: Always update OU path to keep it fresh from AD/Logic
             machine.ou_path = ou_path
@@ -170,7 +235,9 @@ def heartbeat(
                     if existing_machine:
                          # It was an update collision or someone inserted same MAC
                          machine = existing_machine
-                         machine.hostname = new_hostname
+                         # Fix: Do NOT rename the existing valid machine.
+                         # Just accept it and update last_seen.
+                         # machine.hostname = new_hostname  <-- REMOVED
                          machine.last_seen = datetime.now(timezone.utc)
                          machine.ou_path = ou_path
                          # Merge/Add
@@ -217,31 +284,55 @@ def heartbeat(
         # Calculate parent OUs for OU targeting
         parent_ous = []
         if machine.ou_path and machine.ou_path != "Unknown":
-            # Simple DN parsing
-            # CN=PC1,OU=Sales,DC=example -> [OU=Sales,DC=example, DC=example]
-            # Split by comma (naive, but usually works for AD unless comma in name)
-            # Fix: Use regex to handle escaped commas
-            parts = re.split(r'(?<!\\\\),', machine.ou_path)
-            # If start with CN=, skip first part
-            start_idx = 1 if parts[0].upper().startswith("CN=") else 0
+            # Bug Fix 4: Use robust DN parsing instead of naive Regex
+            from ldap3.utils.dn import parse_dn
+            
+            # parse_dn returns list of (attr, val, sep)
+            # CN=PC1,OU=Sales,DC=example -> [('CN', 'PC1', ','), ('OU', 'Sales', ','), ('DC', 'example', '')]
+            # We want headers.
+            
+            parsed = parse_dn(machine.ou_path)
+            # Skip first RDN (CN=Hostname) if it matches hostname usually?
+            # Existing logic was: "If start with CN=, skip first part"
+            
+            start_idx = 0
+            if parsed and parsed[0][0].upper() == 'CN':
+                 start_idx = 1
             
             # Reconstruct parents
-            current_dn = machine.ou_path
-            if start_idx == 1:
-                # Remove CN=...
-                current_dn = ",".join(parts[1:])
-                parent_ous.append(current_dn)
+            # Iterating from start_idx to end
+            
+            from ldap3.utils.dn import escape_dn_chars
+            
+            # Helper to reconstruct DN from parsed slice
+            def reconstruct(p_slice):
+                parts_str = []
+                for attr, val, sep in p_slice:
+                    # We must re-escape value
+                    parts_str.append(f"{attr}={escape_dn_chars(val)}")
+                return ",".join(parts_str)
+            
+            # Create all suffix permutations
+            # e.g. OU=Sales,DC=example and DC=example
+            
+            current_slice = parsed[start_idx:]
+            
+            # Full parent DN
+            if current_slice:
+                 parent_ous.append(reconstruct(current_slice))
+            
+            # Walk up logic (add each parent)
+            # "Simpler: we want all suffixes"
+            # If current_slice is [OU=A, OU=B, DC=C]
+            # We want [OU=A,OU=B,DC=C], [OU=B,DC=C], [DC=C]
+            
+            for i in range(1, len(current_slice)):
+                 suffix = current_slice[i:]
+                 if suffix:
+                      parent_ous.append(reconstruct(suffix))
                 
-            # Now iterate upwards?
-            # Actually, standard AD structure: OU=A,OU=B,DC=C
-            # We want all suffixes.
-            # simpler:
-            parts = re.split(r'(?<!\\\\),', current_dn)
-            for i in range(len(parts)):
-                 # Only if it looks like a valid component (OU= or DC=)
-                 dn_candidate = ",".join(parts[i:])
-                 if dn_candidate:
-                     parent_ous.append(dn_candidate)
+            # Old regex loop removed
+            pass
         
         # Deployment Target Values we care about:
         # 1. Machine ID
@@ -426,10 +517,36 @@ def acknowledge_task(
              print(f"SECURITY WARNING: Invalid Machine Token for {data.mac_address}. Token mismatch.")
              raise HTTPException(status_code=403, detail="Invalid Machine Token")
     else:
-        # Security Fix: If machine has no API Key, it shouldn't be ACKing tasks (tasks are only issued after key gen).
         # This prevents spooling attacks on unprovisioned machines.
         print(f"SECURITY WARNING: Ack received for machine {data.mac_address} without API Key.")
         raise HTTPException(status_code=403, detail="Machine not provisioned (No API Key)")
+
+    # FIX Bug 5: Validate Deployment Target
+    # Check if deployment actually belongs to this machine
+    is_valid_target = False
+    if deployment.target_type == "machine":
+        # ID or Hostname Check
+        if deployment.target_value == str(machine.id):
+             is_valid_target = True
+        elif deployment.target_value.lower() == machine.hostname.lower():
+             is_valid_target = True
+        elif deployment.target_value.lower().startswith(f"cn={machine.hostname}".lower()):
+             # Basic loose check, similar to agent logic
+             is_valid_target = True
+    elif deployment.target_type == "ou":
+        # Check if machine matches OU logic
+        if machine.ou_path:
+             # Logic from heartbeat, simplified:
+             # Does machine.ou_path end with deployment target value?
+             m_dn = machine.ou_path.lower()
+             t_dn = deployment.target_value.lower()
+             if m_dn.endswith(t_dn):
+                 if m_dn == t_dn or m_dn.endswith("," + t_dn):
+                     is_valid_target = True
+
+    if not is_valid_target:
+         print(f"SECURITY ALERT: Machine {machine.hostname} tried to ACK deployment {deployment.id} which targets {deployment.target_value} ({deployment.target_type})")
+         raise HTTPException(status_code=403, detail="Deployment does not target this machine")
 
     # Update or Create Link
     from models import MachineSoftwareLink
@@ -440,12 +557,23 @@ def acknowledge_task(
     )).first()
     
     if not link:
-        link = MachineSoftwareLink(
-            machine_id=machine.id,
-            software_id=deployment.software_id,
-            status="pending"
-        )
-        session.add(link)
+        try:
+             # Double check inside potential lock if we had one, but strict DB constraint is better.
+             # Since we can't change schema easily, we'll try/except
+             link = MachineSoftwareLink(
+                machine_id=machine.id,
+                software_id=deployment.software_id,
+                status="pending"
+             )
+             session.add(link)
+             session.flush() # Force insert to check constraint
+        except Exception: # Handling IntegrityError
+             session.rollback()
+             # Re-fetch
+             link = session.exec(select(MachineSoftwareLink).where(
+                (MachineSoftwareLink.machine_id == machine.id) &
+                (MachineSoftwareLink.software_id == deployment.software_id)
+             )).first()
     
     if data.status == "success":
         if deployment.action == "uninstall":
@@ -488,13 +616,9 @@ def log_agent_event(
     
     if machine:
         # IDOR Security Check
-        from config import settings
-
-        current_ip = request.client.host
-        if settings.TRUST_PROXY_HEADERS:
-             forwarded = request.headers.get("x-forwarded-for")
-             if forwarded:
-                  current_ip = forwarded.split(",")[-1].strip()
+        # IDOR Security Check
+        # Use unified helper
+        current_ip = get_client_ip(request)
 
         if machine.ip_address and current_ip:
             if machine.ip_address != current_ip:

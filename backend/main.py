@@ -60,7 +60,11 @@ def seed_data():
             if not password:
                 import secrets
                 password = secrets.token_urlsafe(12)
-                print(f"WARNING: ADMIN_PASSWORD not set. Generated temporary password: {password}")
+                # Bug Fix 2: Do NOT print password to stdout in production.
+                if settings.USE_MOCK_LDAP:
+                     print(f"WARNING: ADMIN_PASSWORD not set. Generated temporary password: {password}")
+                else:
+                     print("WARNING: ADMIN_PASSWORD not set. Generated temporary password. Please check database or set ADMIN_PASSWORD env var.")
             
             print("Seeding Default Admin...")
                 
