@@ -133,14 +133,41 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             if target_dn.strip().isdigit():
                  target_type = "machine"
             elif target_upper.startswith("CN="):
-                # Critical Fix: CN=... is almost always a machine object in our context or a specific object.
-                # Previously we checked DB, but if it's a new machine not yet in DB, we still want to treat it as "machine" type
-                # so the Agent correctly matches it by hostname/CN.
-                target_type = "machine"
+                # Improved Heuristic for Bug 3:
+                # CN=... can be a machine (CN=Hostname) OR a container (CN=Computers).
+                # We default to 'ou' (container) UNLESS it matches a simple hostname convention 
+                # or we want to be explicit. But without DB lookup, it's ambiguous.
+                # However, machines are usually targeted by ID or plain Hostname in this app.
+                # If a DN is passed, it's likely dragging/dropping an object.
+                # If we assume 'machine' for CN=..., we break 'CN=Computers'.
+                
+                # Check if it looks like a machine specific DN (e.g. child of Agents or ends with specific pattern?)
+                # For now, safe default for bulk deploy via DN is arguably 'ou' because 'machine' 
+                # usually requires ID or pure hostname in other contexts? 
+                # Actually, the frontend might send DN for machines.
+                # Let's use a regex or check if comma is present?
+                # Machines usually are leaf nodes. Containers have children.
+                # "CN=Computers,DC=example..."
+                # "CN=PC1,OU=Sales..."
+                # Both look similar.
+                
+                # Let's try to detect if it's a known container or assume 'machine' only if NO better match?
+                # Or, we can change the logic to: check if machine exists?
+                # We can't check DB efficiently for every item in bulk if list is huge, but it's okay here.
+                
+                 # Check if machine exists with this DN
+                machine_chk = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn) | (Machine.hostname == target_dn))).first()
+                if machine_chk:
+                     # It's a machine if we found one
+                     target_type = "machine"
+                else:
+                    # Treat as OU/Group (Container)
+                    target_type = "ou"
+                    
             elif target_upper.startswith(("OU=", "DC=")):
                 target_type = "ou"
             else:
-                # Fallback
+                # Fallback (Plain hostname or ID)
                  target_type = "machine"
             
             deployment = Deployment(
@@ -157,7 +184,6 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 machines = []
                 if target_type == "machine":
                      # For machine targets, target_dn is expected to be the machine ID or hostname. 
-                     # machines = [] # Removed local init inside if block
                      try:
                         machine_id = int(target_dn)
                         found = session.get(Machine, machine_id)
@@ -166,21 +192,25 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                      except ValueError:
                         # Maybe it is a DN or Hostname?
                         # Try to match hostname directly or extract from CN=...
-                        hostname_candidate = target_dn
-                        if target_dn.upper().strip().startswith("CN="):
-                            # Extract CN value: CN=Hostname,OU=...
-                            # Improved splitting to handle escaped commas
-                            parts = re.split(r'(?<!\\),', target_dn)
-                            if parts:
-                                kv = parts[0].split("=")
-                                if len(kv) == 2:
-                                    # Fix: Unescape the hostname (remove backslashes before commas)
-                                    hostname_candidate = kv[1].replace(r'\,', ',')
-                        
-                        machines = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
-                        if not machines and hostname_candidate != target_dn:
-                             # Try raw match
-                             machines = session.exec(select(Machine).where(Machine.hostname == target_dn)).all()
+                        try:
+                            hostname_candidate = target_dn
+                            if target_dn.upper().strip().startswith("CN="):
+                                # Extract CN value: CN=Hostname,OU=...
+                                # Improved splitting to handle escaped commas
+                                parts = re.split(r'(?<!\\),', target_dn)
+                                if parts:
+                                    kv = parts[0].split("=", 1)
+                                    if len(kv) == 2:
+                                        # Fix: Unescape the hostname (remove backslashes before commas)
+                                        hostname_candidate = kv[1].replace(r'\,', ',')
+                            
+                            machines = session.exec(select(Machine).where(Machine.hostname == hostname_candidate)).all()
+                            if not machines and hostname_candidate != target_dn:
+                                 # Try raw match
+                                 machines = session.exec(select(Machine).where(Machine.hostname == target_dn)).all()
+                        except Exception as hostname_err:
+                            print(f"WARNING: Could not resolve machine hostname: {hostname_err}")
+                            machines = []
                 else: 
                      # OU Target matches if it ends with the DN, but we must ensure it's a component boundary.
                      # e.g. "OU=Sales" matches "...CN=PC1,OU=Sales" but NOT "...OU=PreSales"

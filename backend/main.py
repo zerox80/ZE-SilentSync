@@ -53,13 +53,19 @@ def seed_data():
     
     with Session(engine) as session:
         if not session.exec(select(Admin)).first():
-            if not settings.ADMIN_PASSWORD:
-                 print("ERROR: ADMIN_PASSWORD not set. Cannot seed Default Admin. Please set it in .env or environment.")
+            # Fix: Fallback to SECRET_KEY if ADMIN_PASSWORD is not set (as per docs)
+            password = settings.ADMIN_PASSWORD or settings.SECRET_KEY
+            
+            if not password:
+                 print("ERROR: ADMIN_PASSWORD and SECRET_KEY not set. Cannot seed Default Admin.")
             else:
                 print("Seeding Default Admin...")
+                if not settings.ADMIN_PASSWORD:
+                    print("WARNING: ADMIN_PASSWORD not set. Using SECRET_KEY as default password.")
+                    
                 admin = Admin(
                     username="admin", 
-                    hashed_password=get_password_hash(settings.ADMIN_PASSWORD),
+                    hashed_password=get_password_hash(password),
                     role="superadmin"
                 )
                 session.add(admin)

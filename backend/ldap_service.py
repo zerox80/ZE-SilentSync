@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Optional
 import re
 from ldap3 import Server, Connection, ALL, SUBTREE
 from ldap3.utils.conv import escape_filter_chars
+from ldap3.utils.dn import parse_dn, escape_dn_chars
 from sqlmodel import Session, select
 from config import settings
 from models import Machine
@@ -161,7 +162,6 @@ class LDAPService:
                 "children": []
             }
             
-from ldap3.utils.dn import parse_dn
 
             # Helper to find parent DN
             def get_parent_dn(dn):
@@ -169,19 +169,11 @@ from ldap3.utils.dn import parse_dn
                     parsed = parse_dn(dn)
                     if len(parsed) > 1:
                         # Reconstruct the parent DN by joining components after the first one
-                        # parse_dn returns (attribute, value, separator)
-                        # We need to preserve the separators (except the last one? or use standard joining)
-                        # A simple join of key=value might lose escaping, but parse_dn handles splitting.
-                        # Ideally we find the substring, but reconstructing is safer if we trust the parser.
-                        
-                        # Re-joining: attribute=value + separator
                         parent_parts = []
                         for i in range(1, len(parsed)):
                             attr, val, sep = parsed[i]
-                            # parse_dn unescapes values? No, it usually keeps them or provides raw.
-                            # Actually, let's keep it simple: simpler reconstruction
-                            # If we assume standard AD DNs:
-                            parent_parts.append(f"{attr}={val}")
+                            # Fix: Properly escape the value to ensure valid DN syntax
+                            parent_parts.append(f"{attr}={escape_dn_chars(val)}")
                         
                         return ",".join(parent_parts)
                 except Exception:

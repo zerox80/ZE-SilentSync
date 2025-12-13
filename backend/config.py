@@ -1,4 +1,5 @@
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,7 +24,6 @@ class Settings:
         
         if not self.SECRET_KEY:
             if self.USE_MOCK_LDAP:
-                import secrets
                 self.SECRET_KEY = secrets.token_urlsafe(32)
                 print("WARNING: SECRET_KEY not set. Generated a random one for Mock Mode.")
             else:
@@ -32,12 +32,13 @@ class Settings:
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
             if self.USE_MOCK_LDAP:
-                import secrets
                 self.AGENT_TOKEN = secrets.token_urlsafe(32)
                 print(f"WARNING: AGENT_TOKEN not set. Generated a random secure token: {self.AGENT_TOKEN}")
                 print("Please set AGENT_TOKEN in your .env file for persistence.")
             else:
-                # Fail in production if not set to prevent connectivity loss on restart
-                raise ValueError("AGENT_TOKEN must be set in production mode! Agents will lose connectivity on restart otherwise.")
+                # Fix: Generate a secure random token in production mode
+                self.AGENT_TOKEN = secrets.token_urlsafe(32)
+                print(f"WARNING: AGENT_TOKEN not set. Generated a secure random token.")
+                print("IMPORTANT: Set AGENT_TOKEN in your .env file for persistence across restarts!")
 
 settings = Settings()

@@ -214,13 +214,15 @@ def heartbeat(
                      if val == prefix or val.startswith(prefix + ","):
                          is_target = True
                      
-            elif dep.target_type == "ou":
                 # Robust OU matching
                 if machine.ou_path and dep.target_value:
                     machine_dn = machine.ou_path.lower()
                     target_dn = dep.target_value.lower()
                     
+                    # Fix: Ensure we match if target_dn is a parent in the machine_dn tree
+                    # e.g. target="cn=computers,dc=local" and machine="cn=pc1,cn=computers,dc=local"
                     if machine_dn.endswith(target_dn):
+                         # Ensure boundary correctness (comma or exact match)
                         if machine_dn == target_dn or machine_dn.endswith("," + target_dn):
                             is_target = True
             
@@ -228,77 +230,76 @@ def heartbeat(
                 # print(f"DEBUG: Dep {dep.id} skipped. Not target. (Type: {dep.target_type}, Val: {dep.target_value})")
                 continue
     
-            if is_target:
-                # Schedule Check
-                if dep.schedule_start and current_time < dep.schedule_start:
-                    print(f"DEBUG: Dep {dep.id} skipped. Schedule start future.")
-                    continue
-                if dep.schedule_end and current_time > dep.schedule_end:
-                    print(f"DEBUG: Dep {dep.id} skipped. Schedule end passed.")
-                    continue
-                    
-                # Software Check
-                if dep.software:
-                    # CHECK IF ALREADY INSTALLED / UNINSTALLED
-                    link = session.exec(select(MachineSoftwareLink).where(
-                        (MachineSoftwareLink.machine_id == machine.id) &
-                        (MachineSoftwareLink.software_id == dep.software_id)
-                    )).first()
-                    
-                    # If Action is INSTALL
-                    if dep.action == "install":
-                        # Stop infinite loops: Skip if installed.
-                        # For FAILED, we should allow retry after some time (e.g., 1 hour)
-                        if link:
-                            if link.status == "installed":
-                                # VERSION CHECK FIX
-                                installed_ver = link.installed_version
-                                target_ver = dep.software.version
-                                if installed_ver and installed_ver == target_ver:
-                                     # Exact same version installed
-                                     continue
-                                else:
-                                     print(f"DEBUG: Update detected for {dep.software.name}. Installed: {installed_ver}, Target: {target_ver}")
-                                     # Proceed to install (update)
-                                     pass
-                            elif link.status == "failed":
-                                # Retry after 1 hour
-                                if datetime.utcnow() - link.last_updated < timedelta(hours=1):
-                                    continue
-                                # Else, fall through to retry
-                    # If Action is UNINSTALL
-                    elif dep.action == "uninstall":
-                        # If not installed, we can't uninstall (or we assume success)
-                        if not link:
-                             continue
-                        
+            # Schedule Check
+            if dep.schedule_start and current_time < dep.schedule_start:
+                print(f"DEBUG: Dep {dep.id} skipped. Schedule start future.")
+                continue
+            if dep.schedule_end and current_time > dep.schedule_end:
+                print(f"DEBUG: Dep {dep.id} skipped. Schedule end passed.")
+                continue
+                
+            # Software Check
+            if dep.software:
+                # CHECK IF ALREADY INSTALLED / UNINSTALLED
+                link = session.exec(select(MachineSoftwareLink).where(
+                    (MachineSoftwareLink.machine_id == machine.id) &
+                    (MachineSoftwareLink.software_id == dep.software_id)
+                )).first()
+                
+                # If Action is INSTALL
+                if dep.action == "install":
+                    # Stop infinite loops: Skip if installed.
+                    # For FAILED, we should allow retry after some time (e.g., 1 hour)
+                    if link:
                         if link.status == "installed":
-                             pass # Proceed
-                        elif link.status == "failed":
-                             # Retry uninstall after 1 hour similar to install
-                             if datetime.utcnow() - link.last_updated < timedelta(hours=1):
+                            # VERSION CHECK FIX
+                            installed_ver = link.installed_version
+                            target_ver = dep.software.version
+                            if installed_ver and installed_ver == target_ver:
+                                 # Exact same version installed
                                  continue
-                             print(f"DEBUG: Retrying uninstall for {dep.software.name}")
-                        else:
-                             # print(f"DEBUG: Dep {dep.id} skipped. Not installed/failed, can't uninstall.")
+                            else:
+                                 print(f"DEBUG: Update detected for {dep.software.name}. Installed: {installed_ver}, Target: {target_ver}")
+                                 # Proceed to install (update)
+                                 pass
+                        elif link.status == "failed":
+                            # Retry after 1 hour
+                            if datetime.utcnow() - link.last_updated < timedelta(hours=1):
+                                continue
+                            # Else, fall through to retry
+                # If Action is UNINSTALL
+                elif dep.action == "uninstall":
+                    # If not installed, we can't uninstall (or we assume success)
+                    if not link:
+                         continue
+                    
+                    if link.status == "installed":
+                         pass # Proceed
+                    elif link.status == "failed":
+                         # Retry uninstall after 1 hour similar to install
+                         if datetime.utcnow() - link.last_updated < timedelta(hours=1):
                              continue
-    
-                    download_url = dep.software.download_url
-                    if download_url and download_url.startswith("/"):
-                        # Construct absolute URL using secure BASE_URL
-                        # Fix: Host Header Injection validation
-                        base_url = settings.BASE_URL.rstrip("/")
-                        download_url = f"{base_url}{download_url}"
-    
-                    tasks.append({
-                        "id": dep.id,
-                        "type": dep.action, # install or uninstall
-                        "software_name": dep.software.name,
-                        "download_url": download_url,
-                        "silent_args": dep.software.silent_args,
-                        "is_msi": dep.software.is_msi
-                    })
-                    processed_software_ids.add(dep.software_id)
+                         print(f"DEBUG: Retrying uninstall for {dep.software.name}")
+                    else:
+                         # print(f"DEBUG: Dep {dep.id} skipped. Not installed/failed, can't uninstall.")
+                         continue
+
+                download_url = dep.software.download_url
+                if download_url and download_url.startswith("/"):
+                    # Construct absolute URL using secure BASE_URL
+                    # Fix: Host Header Injection validation
+                    base_url = settings.BASE_URL.rstrip("/")
+                    download_url = f"{base_url}{download_url}"
+
+                tasks.append({
+                    "id": dep.id,
+                    "type": dep.action, # install or uninstall
+                    "software_name": dep.software.name,
+                    "download_url": download_url,
+                    "silent_args": dep.software.silent_args,
+                    "is_msi": dep.software.is_msi
+                })
+                processed_software_ids.add(dep.software_id)
                 
         print(f"DEBUG: Returning {len(tasks)} tasks.")
         return {"status": "ok", "tasks": tasks, "machine_token": machine.api_key}
@@ -375,15 +376,24 @@ def acknowledge_task(
     return {"status": "acknowledged"}
 
 
+class LogRequest(BaseModel):
+    mac_address: str
+    level: str  # INFO, WARN, ERROR
+    message: str
+
 @router.post("/log")
 def log_agent_event(
     request: Request,
-    mac_address: str,
-    level: str,
-    message: str,
+    data: LogRequest,
     session: Session = Depends(get_session)
 ):
-    statement = select(Machine).where(Machine.mac_address == mac_address)
+    # Validate log level
+    valid_levels = {"INFO", "WARN", "ERROR"}
+    level = data.level.upper()
+    if level not in valid_levels:
+        level = "INFO"  # Default to INFO for invalid levels
+    
+    statement = select(Machine).where(Machine.mac_address == data.mac_address)
     machine = session.exec(statement).first()
     
     if machine:
@@ -392,7 +402,7 @@ def log_agent_event(
         # This is a basic check.
         if machine.ip_address and request.client and request.client.host:
             if machine.ip_address != request.client.host:
-                print(f"SECURITY WARNING: Log attempt for {mac_address} from unauthorized IP {request.client.host} (Expected {machine.ip_address}). Allowing for robustness.")
+                print(f"SECURITY WARNING: Log attempt for {data.mac_address} from unauthorized IP {request.client.host} (Expected {machine.ip_address}). Allowing for robustness.")
                 # We do NOT return ignored anymore, just log warning.
                 pass
                 
@@ -400,11 +410,11 @@ def log_agent_event(
         token_header = request.headers.get("X-Machine-Token")
         if machine.api_key:
              if not token_header or not secrets.compare_digest(token_header, machine.api_key):
-                 print(f"SECURITY WARNING: Invalid Machine Token for log from {mac_address}")
+                 print(f"SECURITY WARNING: Invalid Machine Token for log from {data.mac_address}")
                  # For logs, we might just drop it, but 403 is safer to signal misconfig
                  return {"status": "ignored", "reason": "invalid_token"}
                  
-        log = AgentLog(machine_id=machine.id, level=level, message=message)
+        log = AgentLog(machine_id=machine.id, level=level, message=data.message)
         session.add(log)
         session.commit()
     return {"status": "logged"}
