@@ -35,7 +35,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             user = Admin(
                 username=form_data.username,
                 hashed_password=get_password_hash(form_data.password), # Cache current password
-                role="admin" # Default role
+                role="viewer" # Default role (Least Privilege)
             )
             session.add(user)
             session.commit()

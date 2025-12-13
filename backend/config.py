@@ -39,10 +39,16 @@ class Settings:
 
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
-            prefix = self.SECRET_KEY[:8] if self.SECRET_KEY else "unknown"
-            self.AGENT_TOKEN = f"agent-{prefix}-{secrets.token_urlsafe(24)}"
-            self._save_secret("AGENT_TOKEN", self.AGENT_TOKEN)
-            print(f"WARNING: AGENT_TOKEN was missing. Generated and saved.")
+            if not self.USE_MOCK_LDAP:
+                # Security Fix: In production, AGENT_TOKEN must be consistent across all instances.
+                # Auto-generating it locally causes "split brain" where agents can't authenticate.
+                raise ValueError("AGENT_TOKEN must be set in production mode!")
+            else:
+                # In Mock/Dev, we can auto-generate
+                prefix = self.SECRET_KEY[:8] if self.SECRET_KEY else "unknown"
+                self.AGENT_TOKEN = f"agent-{prefix}-{secrets.token_urlsafe(24)}"
+                self._save_secret("AGENT_TOKEN", self.AGENT_TOKEN)
+                print(f"WARNING: AGENT_TOKEN was missing. Generated and saved (Dev/Mock Mode).")
 
 
     def _load_from_secrets_file(self):

@@ -61,17 +61,17 @@ def seed_data():
                 import secrets
                 password = secrets.token_urlsafe(12)
                 print(f"WARNING: ADMIN_PASSWORD not set. Generated temporary password: {password}")
-            else:
-                print("Seeding Default Admin...")
-                    
-                admin = Admin(
-                    username="admin", 
-                    hashed_password=get_password_hash(password),
-                    role="superadmin"
-                )
-                session.add(admin)
-                session.commit()
-                print("Default admin created.")
+            
+            print("Seeding Default Admin...")
+                
+            admin = Admin(
+                username="admin", 
+                hashed_password=get_password_hash(password),
+                role="superadmin"
+            )
+            session.add(admin)
+            session.commit()
+            print("Default admin created.")
 
 from fastapi.staticfiles import StaticFiles
 import os

@@ -202,20 +202,23 @@ class LDAPService:
             # Helper to find parent DN
             def get_parent_dn(dn):
                 try:
-                     # Fix: Use more robust DN parsing that handles escapes correctly
+                    # Fix: Use more robust DN parsing that handles escapes correctly
                     parsed = parse_dn(dn)
                     if len(parsed) > 1:
                         # Reconstruct the parent DN
-                        # We want all RDNs starting from the second one (index 1)
                         # parsed is list of (attr, val, sep)
+                        # We want to skip the first RDN (index 0) and reconstruct the rest.
                         
                         parent_parts = []
                         for i in range(1, len(parsed)):
                             attr, val, sep = parsed[i]
-                            # escape_dn_chars handles the value escaping.
-                            # We must manually reconstruct the RDN.
+                            # escape_dn_chars handles the value escaping (e.g. ',' -> '\,')
+                            # We must reconstruct the RDN exactly as it should appear in the DN.
+                            
+                            # Note: sep is the separator that follows THIS RDN.
+                            # For the last RDN, sep might be empty.
+                            
                             part = f"{attr}={escape_dn_chars(val)}"
-                            # Add separator if it exists (it's the separator AFTER this RDN)
                             if sep:
                                 part += sep
                             parent_parts.append(part)

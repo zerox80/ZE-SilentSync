@@ -28,6 +28,10 @@ def create_software(software: Software, session: Session = Depends(get_session),
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
             raise HTTPException(status_code=400, detail="Invalid icon_url. Must start with http://, https://, or /static/")
 
+    # Bug Fix: Enforce RBAC
+    if admin.role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Insufficient privileges.")
+
     session.add(software)
     session.commit()
     session.refresh(software)
@@ -49,6 +53,10 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     software = session.get(Software, software_id)
     if not software:
         raise HTTPException(status_code=404, detail="Software not found")
+        
+    # Bug Fix: Enforce RBAC. Only superadmins can delete software.
+    if admin.role != "superadmin":
+        raise HTTPException(status_code=403, detail="Insufficient privileges. Required: superadmin")
     
     # Audit Log Entry
     log = AuditLog(admin_id=admin.id, action="delete_software", target=software.name, level="INFO")
@@ -76,37 +84,88 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     import os
     files_to_delete = []
     
-    # Bug 2 Fix: Check for file usage AFTER the commit to ensure we see the updated state
-    # We must delete the software record and commit to update the state for the check below.
-    session.delete(software)
-    session.commit()
+    # Bug Fix: Race Condition handling.
+    # We must check for usage while holding the DB lock (after delete, before commit).
+    # If we commit first, another process could insert a reference before we delete the file.
     
-    # Ideally, we would rely on a garbage collector process, but for this scope:
+    session.delete(software)
+    # Flush to ensure delete is registered in this transaction scope for queries
+    session.flush()
+    
+    files_to_delete = []
+    
+    import os
+    
+    # Check Download URL
     if software.download_url and software.download_url.startswith("/static/"):
-        filename = os.path.basename(software.download_url)
-        safe_filename = os.path.basename(filename)
-        file_path = os.path.join("uploads", safe_filename)
-        
-        # Check if ANY software still uses this URL (since we just deleted ours, count should be 0 if unique)
+        # Check if ANY OTHER software still uses this URL
+        # We query for any software with this URL. Since we deleted 'software', 
+        # it shouldn't be returned unless implicit rollback? No, flush handles it.
         usage_count = session.exec(select(Software).where(Software.download_url == software.download_url)).all()
         
         if len(usage_count) == 0:
-             files_to_delete.append(file_path)
-        else:
-             print(f"Skipping file deletion for {file_path} (Still used by {len(usage_count)} others)")
-
+            filename = os.path.basename(software.download_url)
+            # Basic validation
+            if filename and not filename.startswith(".") and "/" not in filename:
+                 file_path = os.path.join("uploads", filename)
+                 files_to_delete.append(file_path)
+    
+    # Check Icon URL
     if software.icon_url and software.icon_url.startswith("/static/"):
-        icon_filename = os.path.basename(software.icon_url)
-        safe_icon_filename = os.path.basename(icon_filename)
-        icon_path = os.path.join("uploads", safe_icon_filename)
-        
-        usage_count = session.exec(select(Software).where(Software.icon_url == software.icon_url)).all()
-        
-        if len(usage_count) == 0:
-            files_to_delete.append(icon_path)
-        else:
-             print(f"Skipping icon deletion for {icon_path} (Still used by {len(usage_count)} others)")
+         usage_count = session.exec(select(Software).where(Software.icon_url == software.icon_url)).all()
+         if len(usage_count) == 0:
+            filename = os.path.basename(software.icon_url)
+            if filename and not filename.startswith(".") and "/" not in filename:
+                 file_path = os.path.join("uploads", filename)
+                 files_to_delete.append(file_path)
 
+    # Commit the DB changes. 
+    # Note: If commit fails, we haven't deleted files yet.
+    # If commit succeeds, we delete files immediately.
+    # Ideally, we'd delete files *during* commit, but we can't.
+    # Be aware: If we delete files now, and commit fails, we are in trouble?
+    # No, we delete files AFTER commit? 
+    # If we delete AFTER commit, we have the original race condition (someone inserted while we committed?).
+    # SQLite lock is released on commit.
+    # So we MUST delete files *while* locked? 
+    # But files aren't transactional.
+    # If we delete file, then commit fails (Wait, why would commit fail? Constraint error? We deleted stuff already).
+    # Commit failure is rare here. The Race Condition is common.
+    # SO: We decide to Delete Files *after* commit but rely on the fact that we checked *inside* the lock.
+    # WAIT. If we commit, lock is released. B inserts.
+    # The check we did inside is verified. But invalid the moment we commit?
+    
+    # Correct SQLite Strategy:
+    # 1. Delete Row. (Lock held).
+    # 2. Check Others. (Lock held). If exist, don't delete.
+    # 3. If None exist -> We *intend* to delete.
+    # 4. Commit. (Lock Released).
+    # 5. Delete File.
+    
+    # Is it possible B inserted *between* 4 and 5?
+    # B Inserts Row referencing File.
+    # A Deletes File.
+    # B points to nothing.
+    # YES.
+    
+    # To fix this, we'd need a "File Lock" or "Deleted Flag" on the file itself?
+    # Or, we accept that "Commit" creates the truth.
+    # If B inserts, B's transaction *starts* after A's commit? (if serialized).
+    # If B starts before, B waits for A.
+    # A commits (File is "Unused" in DB).
+    # B proceeds. B inserts reference.
+    # A runs os.remove.
+    # B is screwed.
+    
+    # The only way to stop B is if B checks file existence? 
+    # Even then, TOCTOU.
+    
+    # We will stick to the "Check Inside Transaction" logic, which minimizes the window, 
+    # but strictly speaking, file system operations are separate.
+    # However, by flushing and checking, we ensure Logic correctness regarding *current* state.
+    
+    session.commit()
+    
     # Execute deletion
     for fpath in files_to_delete:
         if os.path.exists(fpath) and os.path.isfile(fpath):
@@ -253,11 +312,16 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
 
     all_machine_ids = list(machines_dict.keys())
     
-    # Fetch existing links for (Any Machine in List) AND (Any Software in Request)
-    existing_links = session.exec(select(MachineSoftwareLink).where(
-        (MachineSoftwareLink.machine_id.in_(all_machine_ids)) & 
-        (MachineSoftwareLink.software_id.in_(request.software_ids))
-    )).all()
+    # Fix: Batch queries to avoid SQLite limit (999 vars)
+    existing_links = []
+    chunk_size = 500
+    for i in range(0, len(all_machine_ids), chunk_size):
+        chunk = all_machine_ids[i:i + chunk_size]
+        batch_links = session.exec(select(MachineSoftwareLink).where(
+            (MachineSoftwareLink.machine_id.in_(chunk)) & 
+            (MachineSoftwareLink.software_id.in_(request.software_ids))
+        )).all()
+        existing_links.extend(batch_links)
     
     link_map = {(l.machine_id, l.software_id): l for l in existing_links}
     

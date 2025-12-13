@@ -24,7 +24,7 @@ def heartbeat(
 ):
     try:
         hostname = data.hostname
-        mac_address = data.mac_address
+        mac_address = data.mac_address.lower() # Bug Fix: Normalize MAC Case
         os_info = data.os_info
         # Find or create machine
         statement = select(Machine).where(Machine.mac_address == mac_address)
@@ -485,14 +485,17 @@ def log_agent_event(
     
     if machine:
         # IDOR Security Check
-        # If we have an IP recorded, we can check it.
-        # This is a basic check.
-        if machine.ip_address and request.client and request.client.host:
-            if machine.ip_address != request.client.host:
-                print(f"SECURITY WARNING: Log attempt for {data.mac_address} from unauthorized IP {request.client.host} (Expected {machine.ip_address}). Allowing for robustness.")
-                # We do NOT return ignored anymore, just log warning.
-                pass
-                
+        from config import settings
+
+        current_ip = request.client.host
+        if settings.TRUST_PROXY_HEADERS:
+             forwarded = request.headers.get("x-forwarded-for")
+             if forwarded:
+                  current_ip = forwarded.split(",")[0].strip()
+
+        if machine.ip_address and current_ip:
+            if machine.ip_address != current_ip:
+                print(f"SECURITY WARNING: Log attempt for {data.mac_address} from unauthorized IP {current_ip} (Expected {machine.ip_address}). Allowing for robustness.")
                 # We do NOT return ignored anymore, just log warning.
                 pass
         
