@@ -143,7 +143,15 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     let tmp_dir = tempfile::Builder::new().prefix("zldap_install_").tempdir()?;
     // Fix: Remove query parameters from filename
     let raw_name = task.download_url.split('/').last().unwrap_or("installer.exe");
-    let file_name = raw_name.split('?').next().unwrap_or("installer.exe");
+    let base_name = raw_name.split('?').next().unwrap_or("installer.exe");
+    
+    // Bug Fix 9: Sanitize Filename (Prevent Path Traversal)
+    // Extract just the filename component
+    let file_name = std::path::Path::new(base_name)
+        .file_name()
+        .and_then(|os_str| os_str.to_str())
+        .unwrap_or("installer.exe");
+
     let file_path = tmp_dir.path().join(file_name);
 
     info!("Downloading from: {} to {:?}", task.download_url, file_path);
@@ -180,8 +188,12 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
             // For MSI, we use msiexec /x <file> /qn
             command_path = std::path::PathBuf::from("msiexec");
             args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
+            args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
         } else {
-            warn!("Uninstalling EXE is experimental. Running downloaded file with args.");
+            // Bug Fix 10: Disable Unsafe EXE Uninstall
+            // Running an EXE installer again does not guarantee uninstall; it often reinstalls.
+            warn!("Skipping uninstall for EXE {}. Generic uninstall not supported safely.", file_name);
+            return Err(format!("Generic EXE uninstall for {} is not supported safely.", file_name).into());
         }
     } else {
         // INSTALL

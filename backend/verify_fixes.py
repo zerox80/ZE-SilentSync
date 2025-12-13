@@ -2,6 +2,7 @@ import os
 import shutil
 from sqlmodel import Session, SQLModel, create_engine, select
 from datetime import datetime
+from fastapi import HTTPException
 
 # Setup Env for Testing
 os.environ["SECRET_KEY"] = "testsecret"
@@ -139,16 +140,12 @@ def test_hostname_collision():
         
         try:
             res2 = agent.heartbeat(req2, data2, session)
-            print("PASS: No 409 Conflict Raised.")
-            
-            # Check Hostname in DB
-            m2 = session.exec(select(Machine).where(Machine.mac_address == "AA:BB:CC:00:00:02")).first()
-            print(f"Machine 2 Hostname: {m2.hostname}")
-            if "PC-Collision-dup-" in m2.hostname:
-                 print("PASS: Hostname renamed correctly.")
+            print("FAIL: Should have raised 409 Conflict.")
+        except HTTPException as e:
+            if e.status_code == 409:
+                print("PASS: Raised 409 Conflict as expected.")
             else:
-                 print(f"FAIL: Hostname not renamed? {m2.hostname}")
-                 
+                 print(f"FAIL: Raised unexpected status: {e.status_code}")
         except Exception as e:
             print(f"FAIL: Exception raised: {e}")
 

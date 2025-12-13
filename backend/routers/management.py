@@ -43,7 +43,14 @@ def create_software(software: Software, session: Session = Depends(get_session),
         raise HTTPException(status_code=403, detail="Insufficient privileges.")
 
     session.add(software)
-    session.commit()
+    try:
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        # Check for IntegrityError (Name+Version)
+        if "unique constraint" in str(e).lower() or "integrityerror" in str(e).lower():
+             raise HTTPException(status_code=409, detail="Software with this name and version already exists.")
+        raise e
     session.refresh(software)
     
     # Audit Log
@@ -138,38 +145,25 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
             if filename and not filename.startswith(".") and "/" not in filename:
                  files_to_delete.append(os.path.join("uploads", filename))
 
-    # Rename phase
-    for fpath in files_to_delete:
-         try:
-             if os.path.exists(fpath):
-                 temp_path = fpath + ".deleted"
-                 os.rename(fpath, temp_path)
-                 renamed_files.append((fpath, temp_path))
-         except Exception as e:
-             print(f"Error renaming {fpath} for deletion: {e}")
-             # If rename fails, we risk race. But we proceed.
-
+    # Bug Fix 4: File Deletion Race Condition
+    # Delete from DB first. If that succeeds, then delete from disk.
+    # This prevents the file from vanishing if the DB delete fails/rolls back.
+    
     try:
         session.commit()
     except Exception as e:
         session.rollback()
-        # Rename back
-        for orig, temp in renamed_files:
-             try:
-                 if os.path.exists(temp):
-                     os.rename(temp, orig)
-             except: 
-                 pass
         raise e
     
-    # Final Delete
-    for orig, temp in renamed_files:
+    # Final Delete from Disk (Post-Commit)
+    for fpath in files_to_delete:
          try:
-             if os.path.exists(temp):
-                 os.remove(temp)
-                 print(f"Deleted file: {orig}")
+             if os.path.exists(fpath):
+                 os.remove(fpath)
+                 print(f"Deleted file: {fpath}")
          except Exception as e:
-             print(f"Error deleting temp file {temp}: {e}")
+             print(f"Error deleting file {fpath}: {e}")
+             # Non-critical: Orphaned file can be cleaned up later
 
     return {"status": "deleted", "id": software_id}
 

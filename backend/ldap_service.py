@@ -107,7 +107,8 @@ class LDAPService:
                      return str(conn.entries[0].distinguishedName)
              return "Unknown"
         except Exception as e:
-            print(f"LDAP Lookup Error: {e}")
+            # Fix Bug 8: Improve error logging for debugging
+            print(f"LDAP Lookup Error in resolve_machine_ou for {hostname}: {e}")
             return "Unknown"
 
     def get_ou_tree(self, session: Optional[Session] = None) -> Dict[str, Any]:

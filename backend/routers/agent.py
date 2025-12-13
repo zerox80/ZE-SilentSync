@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, select, or_
+from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta, timezone
 from database import get_session
 from models import Machine, Deployment, Software, AgentLog
@@ -50,7 +51,9 @@ def heartbeat(
 ):
     try:
         hostname = data.hostname
-        mac_address = data.mac_address.lower() # Bug Fix: Normalize MAC Case
+        # Bug Fix 3: Normalize MAC Address
+        # Standardize on lower case, colon-separated
+        mac_address = data.mac_address.strip().lower().replace("-", ":")
         os_info = data.os_info
         
         # Bug Fix 3: Rate Limiting for New Machine Creation (DoS Protection)
@@ -135,11 +138,9 @@ def heartbeat(
             
             if machine_by_host:
                 # Machine exists with different MAC -> Prevent Hijacking unless explicit admin action?
-                # Fix: Handle collision by renaming instead of DoS/Blocking
-                suffix = secrets.token_hex(2)
-                new_hostname = f"{hostname}-dup-{suffix}"
-                print(f"Hostname conflict for {hostname}. Renaming to {new_hostname}")
-                hostname = new_hostname
+                # Fix: Handle collision by Rejecting
+                print(f"Hostname conflict for {hostname} (MAC: {mac_address}). Existing MAC: {machine_by_host.mac_address}")
+                raise HTTPException(status_code=409, detail="Hostname collision: Hostname already taken by another device.")
                 
                 # Now create with new hostname
                 machine = Machine(
@@ -345,7 +346,7 @@ def heartbeat(
         
         target_machine_values = [str(machine.id), machine.hostname, f"CN={machine.hostname}"]
         
-        statement = select(Deployment).where(
+        statement = select(Deployment).options(joinedload(Deployment.software)).where(
             or_(
                 (Deployment.target_type == "machine") & (Deployment.target_value.in_(target_machine_values)),
                 (Deployment.target_type == "ou") & (Deployment.target_value.in_(parent_ous))

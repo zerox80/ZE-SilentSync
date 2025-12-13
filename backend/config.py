@@ -68,9 +68,10 @@ class Settings:
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
             if not self.USE_MOCK_LDAP:
-                # Security Fix: In production, AGENT_TOKEN *should* be set, but to prevent crash we generate one.
-                print("CRITICAL WARNING: AGENT_TOKEN is missing in production! Generating a temporary random token. FIX THIS IN DEPLOYMENT.")
-                self.AGENT_TOKEN = f"agent-PROD-GENERATED-{secrets.token_urlsafe(24)}"
+                # Security Fix: In production, we must persist this token if possible, otherwise agents disconnect on restart.
+                print("CRITICAL WARNING: AGENT_TOKEN is missing in production! Generating and SAVING a random token.")
+                self.AGENT_TOKEN = f"agent-PROD-{secrets.token_urlsafe(24)}"
+                self._save_secret("AGENT_TOKEN", self.AGENT_TOKEN)
             else:
                 # In Mock/Dev, we can auto-generate
                 prefix = self.SECRET_KEY[:8] if self.SECRET_KEY else "unknown"
