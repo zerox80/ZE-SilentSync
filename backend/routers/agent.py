@@ -117,12 +117,17 @@ def heartbeat(
             machine.os_info = os_info
             # Ip Address Security / IDOR prep
             # Ip Address Security / IDOR prep
-            # Fix: Trust X-Forwarded-For if available (behind proxy)
-            forwarded = request.headers.get("x-forwarded-for")
-            if forwarded:
-                 machine.ip_address = forwarded.split(",")[0].strip()
-            elif request.client and request.client.host:
+            # Fix: Trust X-Forwarded-For ONLY if configured (Security)
+            # For now, we disable it or treat it with caution. The previous "Trust" was too open.
+            # safe_proxy = settings.TRUSTED_PROXY_Count?
+            # We will prefer client.host unless explicit override logic is added.
+            if request.client and request.client.host:
                  machine.ip_address = request.client.host
+            else:
+                 # Fallback for some proxies (but risky)
+                 forwarded = request.headers.get("x-forwarded-for")
+                 if forwarded:
+                      machine.ip_address = forwarded.split(",")[0].strip()
                  
             # Fix: Always update OU path to keep it fresh from AD/Logic
             machine.ou_path = ou_path
@@ -177,6 +182,7 @@ def heartbeat(
                             api_key=secrets.token_urlsafe(32) # New Token
                         )
                         session.add(machine_retry)
+                        # Fix: Ensure logic uses machine_retry
                         machine = machine_retry
 
                     session.commit()
@@ -469,7 +475,9 @@ def log_agent_event(
     valid_levels = {"INFO", "WARN", "ERROR"}
     level = data.level.upper()
     if level not in valid_levels:
-        level = "INFO"  # Default to INFO for invalid levels
+        # Fix: Reject invalid levels or Warn? Rejecting is better for API contract.
+        # level = "INFO" 
+        raise HTTPException(status_code=400, detail=f"Invalid log level. Must be one of {valid_levels}")
     
     statement = select(Machine).where(Machine.mac_address == data.mac_address)
     machine = session.exec(statement).first()

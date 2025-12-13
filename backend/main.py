@@ -41,8 +41,9 @@ def seed_data():
                 session.add(s)
             
             # Seed a Mock Machine for testing
-            if not session.exec(select(Machine)).first():
-                 session.add(Machine(hostname="TEST-PC-01", mac_address="00:11:22:33:44:55", os_info="Windows 11 Pro", ou_path="OU=Sales,DC=example,DC=com"))
+            # Security Fix: Do NOT seed a default machine with known details in production.
+            # if not session.exec(select(Machine)).first():
+            #      session.add(Machine(hostname="TEST-PC-01", mac_address="00:11:22:33:44:55", os_info="Windows 11 Pro", ou_path="OU=Sales,DC=example,DC=com"))
             
             session.commit()
 

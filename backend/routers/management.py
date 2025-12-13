@@ -12,11 +12,17 @@ from ldap_service import ldap_service
 router = APIRouter(prefix="/api/v1/management", tags=["management"], dependencies=[Depends(get_current_admin)])
 
 @router.get("/software", response_model=List[Software])
-def get_software(session: Session = Depends(get_session)):
-    return session.exec(select(Software)).all()
+def get_software(offset: int = 0, limit: int = 100, session: Session = Depends(get_session)):
+    return session.exec(select(Software).offset(offset).limit(limit)).all()
 
 @router.post("/software", response_model=Software)
 def create_software(software: Software, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
+    # Security Fix: Validate download_url scheme
+    if software.download_url:
+        url = software.download_url.lower()
+        if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
+            raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
+
     session.add(software)
     session.commit()
     session.refresh(software)
@@ -112,8 +118,8 @@ def get_ad_tree(session: Session = Depends(get_session)):
     return ldap_service.get_ou_tree(session)
 
 @router.get("/machines", response_model=List[Machine])
-def get_machines(session: Session = Depends(get_session)):
-    return session.exec(select(Machine)).all()
+def get_machines(offset: int = 0, limit: int = 100, session: Session = Depends(get_session)):
+    return session.exec(select(Machine).offset(offset).limit(limit)).all()
 
 @router.post("/deploy")
 def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
@@ -228,6 +234,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
              # Fetch all machines in this OU (recursive suffix check)
              candidates = session.exec(select(Machine).where(Machine.ou_path.endswith(target_dn))).all()
              for m in candidates:
+                 # Fix: Strict Suffix Match to avoid partial OU matches (e.g. 'est,DC=com' matching 'Test,DC=com')
                  if m.ou_path == target_dn or m.ou_path.endswith("," + target_dn):
                      found_machines.append(m)
 

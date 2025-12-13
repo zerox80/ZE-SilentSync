@@ -200,32 +200,25 @@ class LDAPService:
             # Helper to find parent DN
             def get_parent_dn(dn):
                 try:
+                     # Fix: Use more robust DN parsing that handles escapes correctly
                     parsed = parse_dn(dn)
                     if len(parsed) > 1:
                         # Reconstruct the parent DN
+                        # We want all RDNs starting from the second one (index 1)
                         # parsed is list of (attr, val, sep)
-                        # We want all except the first one.
-                        # We must respect the separators.
                         
                         parent_parts = []
                         for i in range(1, len(parsed)):
                             attr, val, sep = parsed[i]
-                            # Use original separator or assume comma?
-                            # ldap3's parse_dn separates RDNS. The separator is AT THE END of the tuple.
-                            # The last RDN has empty separator.
-                            # We want to reconstruct from index 1.
-                            
+                            # escape_dn_chars handles the value escaping.
+                            # We must manually reconstruct the RDN.
                             part = f"{attr}={escape_dn_chars(val)}"
+                            # Add separator if it exists (it's the separator AFTER this RDN)
                             if sep:
                                 part += sep
                             parent_parts.append(part)
                             
-                        # Join them? parse_dn already includes separators in 'sep'
-                        # So we just join them empty?
-                        # Wait, parse_dn returns [('CN', 'Users', ','), ('DC', 'local', '')]
-                        # So parent is "DC=local"
                         return "".join(parent_parts)
-                        
                 except Exception:
                     pass
                 return None

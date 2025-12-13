@@ -74,28 +74,34 @@ class Settings:
 
     def _save_secret(self, key, value):
         """Persist secret to both .env and secrets.env for redundancy"""
-        # 1. Update .env (Best Effort)
-        self._append_to_file(".env", key, value)
-        # 2. Update secrets.env (Robust persistence for Docker volumes)
-        self._append_to_file("secrets.env", key, value)
+        # Fix: Use file locking to prevent race conditions
+        import fcntl
         
-    def _append_to_file(self, filepath, key, value):
-        try:
-            # Ensure proper newline handling
-            prefix = ""
-            if os.path.exists(filepath):
-                with open(filepath, "rb") as f:
+        for filepath in [".env", "secrets.env"]:
+            try:
+                # Open in append mode, but we need a lock. 
+                # We open with 'a+' to read/write/append
+                with open(filepath, "a+") as f:
+                    fcntl.flock(f, fcntl.LOCK_EX)
                     try:
-                        f.seek(-1, os.SEEK_END)
-                        last_char = f.read(1)
-                        if last_char != b"\n":
-                            prefix = "\n"
-                    except OSError:
-                        pass # Empty file
+                        # Check if key exists already to avoid duplicates?
+                        # It's expensive to read all. We just append. 
+                        # Last value usually wins in doten.
+                        
+                        ensure_newline = False
+                        if f.tell() > 0:
+                            f.seek(f.tell() - 1)
+                            if f.read(1) != "\n":
+                                ensure_newline = True
+                        
+                        if ensure_newline:
+                            f.write("\n")
+                        f.write(f"{key}={value}\n")
+                    finally:
+                        fcntl.flock(f, fcntl.LOCK_UN)
+            except Exception as e:
+                print(f"Failed to save {key} to {filepath}: {e}")
 
-            with open(filepath, "a") as f:
-                f.write(f"{prefix}{key}={value}\n")
-        except Exception as e:
-            print(f"Failed to save {key} to {filepath}: {e}")
+    # _append_to_file removed as it is now integrated with locking above
 
 settings = Settings()
