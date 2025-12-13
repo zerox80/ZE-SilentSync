@@ -188,7 +188,6 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
             // For MSI, we use msiexec /x <file> /qn
             command_path = std::path::PathBuf::from("msiexec");
             args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
-            args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
         } else {
             // Bug Fix 10: Disable Unsafe EXE Uninstall
             // Running an EXE installer again does not guarantee uninstall; it often reinstalls.

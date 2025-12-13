@@ -24,8 +24,14 @@ def create_software(software: Software, session: Session = Depends(get_session),
              raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
         
         # Bug Fix 9: Prevent credentials in URL
-        if "@" in url and not url.startswith("/static/"):
-             raise HTTPException(status_code=400, detail="Security Error: Credentials in URL are not allowed.")
+        from urllib.parse import urlparse
+        try:
+             parsed_url = urlparse(url)
+             if parsed_url.username or parsed_url.password:
+                  raise HTTPException(status_code=400, detail="Security Error: Credentials in URL are not allowed.")
+        except Exception:
+             # Fallback or pass if parsing failed (unlikely for valid http/https)
+             pass
 
         if url.startswith("/static/") and ".." in url:
              raise HTTPException(status_code=400, detail="Path traversal detected in download_url")
@@ -101,38 +107,13 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     import os
     files_to_delete = []
     
-    # Bug Fix: Race Condition handling.
-    # We must check for usage while holding the DB lock (after delete, before commit).
-    # If we commit first, another process could insert a reference before we delete the file.
-    
-    session.delete(software)
-    # Flush to ensure delete is registered in this transaction scope for queries
-    session.flush()
-    
-    files_to_delete = []
-    
-    import os
-    
-    # Check Download URL
-    # Bug Fix 6: Race Condition handling.
-    # Strategy: Rename file to .deleted *before* commit. 
-    # If B inserts reference to 'file' during this, it will point to non-existent file (Safe violation).
-    # If commit fails, we rename back.
-    # If commit succeeds, we delete .deleted.
-    
-    session.delete(software)
-    # Flush to ensure delete is registered
-    session.flush()
-    
-    files_to_delete = []
-    renamed_files = [] # Tuples of (original, temp)
-    import os
-    import shutil
-    
     # Check Download URL
     if software.download_url and software.download_url.startswith("/static/"):
         usage_count = session.exec(select(Software).where(Software.download_url == software.download_url)).all()
-        if len(usage_count) == 0:
+        # If this is the only one (or creates a condition where count is 1 inclusive strictly before, but here we haven't deleted yet)
+        # Actually session.delete is pending. 
+        # Safer: Check if count <= 1 (this one).
+        if len(usage_count) <= 1: 
             filename = os.path.basename(software.download_url)
             if filename and not filename.startswith(".") and "/" not in filename:
                  files_to_delete.append(os.path.join("uploads", filename))
@@ -140,13 +121,17 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     # Check Icon URL
     if software.icon_url and software.icon_url.startswith("/static/"):
          usage_count = session.exec(select(Software).where(Software.icon_url == software.icon_url)).all()
-         if len(usage_count) == 0:
+         if len(usage_count) <= 1:
             filename = os.path.basename(software.icon_url)
             if filename and not filename.startswith(".") and "/" not in filename:
                  files_to_delete.append(os.path.join("uploads", filename))
 
+    # Perform DB Delete
+    session.delete(software)
+    session.flush()
+
     # Bug Fix 4: File Deletion Race Condition
-    # Delete from DB first. If that succeeds, then delete from disk.
+    # Commit first. If that succeeds, then delete from disk.
     # This prevents the file from vanishing if the DB delete fails/rolls back.
     
     try:
@@ -181,7 +166,7 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
         raise HTTPException(status_code=400, detail="Target DN cannot be empty")
     
     # Bug Fix: Validate target_type parameter
-    valid_target_types = {"machine", "ou", "group"}
+    valid_target_types = {"machine", "ou"}
     if target_type not in valid_target_types:
         raise HTTPException(status_code=400, detail=f"Invalid target_type. Must be one of: {', '.join(valid_target_types)}")
         
@@ -335,6 +320,40 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
          t_type = "machine"
          if dn.strip().upper().startswith(("OU=", "DC=")): t_type = "ou"
          
+         # Verification for machine types:
+         # If it's a machine, did we find it?
+         if t_type == "machine":
+             # We can check if this 'dn' string maps to any resolved machine
+             # Our machines_dict keys are IDs.
+             # We need to check if 'dn' (which could be ID or Hostname) was successfully resolved.
+             # Inverse lookup or re-check:
+             # An easy way is to check if we can resolve it again from machines_dict OR
+             # more efficiently: we built valid_machine_lookup earlier? No we didn't.
+             # Let's simple check:
+             
+             found_machine = False
+             
+             # Case 1: ID
+             if dn.strip().isdigit():
+                 if int(dn.strip()) in machines_dict: found_machine = True
+             
+             # Case 2: ID match failed? Check hostnames?
+             # machines_dict only helps if we know the ID.
+             # We should iterate machines_dict to find a match if we want to be strict.
+             if not found_machine:
+                 dn_lower = dn.strip().lower()
+                 for m in machines_dict.values():
+                     if str(m.id) == dn.strip():
+                         found_machine = True; break
+                     if m.hostname.lower() == dn_lower:
+                         found_machine = True; break
+                     if m.hostname.lower() == dn_lower.replace("cn=", ""):
+                         found_machine = True; break
+             
+             if not found_machine:
+                 # Skip invalid machine target
+                 continue
+
          for sid in request.software_ids:
              new_deployments.append(Deployment(
                  software_id=sid,
