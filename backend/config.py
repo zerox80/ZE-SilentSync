@@ -27,18 +27,27 @@ class Settings:
                 self.SECRET_KEY = secrets.token_urlsafe(32)
                 print("WARNING: SECRET_KEY not set. Generated a random one for Mock Mode.")
             else:
-                raise ValueError("SECRET_KEY must be set in production mode!")
+                self.SECRET_KEY = secrets.token_urlsafe(32)
+                # Fix: Persist to .env
+                self._append_to_env("SECRET_KEY", self.SECRET_KEY)
+                print("WARNING: SECRET_KEY was missing. Generated and saved to .env")
 
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
             if self.USE_MOCK_LDAP:
                 self.AGENT_TOKEN = secrets.token_urlsafe(32)
                 print(f"WARNING: AGENT_TOKEN not set. Generated a random secure token: {self.AGENT_TOKEN}")
-                print("Please set AGENT_TOKEN in your .env file for persistence.")
             else:
-                # Fix: Generate a secure random token in production mode
+                # Fix: Generate a secure random token and PERSIST it
                 self.AGENT_TOKEN = secrets.token_urlsafe(32)
-                print(f"WARNING: AGENT_TOKEN not set. Generated a secure random token.")
-                print("IMPORTANT: Set AGENT_TOKEN in your .env file for persistence across restarts!")
+                self._append_to_env("AGENT_TOKEN", self.AGENT_TOKEN)
+                print(f"WARNING: AGENT_TOKEN was missing. Generated and saved to .env")
+                
+    def _append_to_env(self, key, value):
+        try:
+            with open(".env", "a") as f:
+                f.write(f"\n{key}={value}\n")
+        except Exception as e:
+            print(f"Failed to save {key} to .env: {e}")
 
 settings = Settings()

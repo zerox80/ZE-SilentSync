@@ -65,12 +65,11 @@ class LDAPService:
         # Real LDAP
         try:
              server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
-             conn = Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True)
-             
-             # Search for computer
-             conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={escape_filter_chars(hostname)}))', attributes=['distinguishedName'])
-             if conn.entries:
-                 return str(conn.entries[0].distinguishedName)
+             with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
+                 # Search for computer
+                 conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={escape_filter_chars(hostname)}))', attributes=['distinguishedName'])
+                 if conn.entries:
+                     return str(conn.entries[0].distinguishedName)
              return "Unknown"
         except Exception as e:
             print(f"LDAP Lookup Error: {e}")
@@ -128,14 +127,17 @@ class LDAPService:
         """Connects to real AD and builds the tree."""
         try:
             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
-            conn = Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True, raise_exceptions=True)
+            # Fix: Use context manager to ensure unbind
+            with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True, raise_exceptions=True) as conn:
+                # Search for OUs and Computers
+                conn.search(settings.AD_BASE_DN, '(objectClass=organizationalUnit)', attributes=['distinguishedName', 'name'])
+                ous = [entry for entry in conn.entries]
+                
+                conn.search(settings.AD_BASE_DN, '(objectClass=computer)', attributes=['distinguishedName', 'name'])
+                computers = [entry for entry in conn.entries]
             
-            # Search for OUs and Computers
-            conn.search(settings.AD_BASE_DN, '(objectClass=organizationalUnit)', attributes=['distinguishedName', 'name'])
-            ous = [entry for entry in conn.entries]
-            
-            conn.search(settings.AD_BASE_DN, '(objectClass=computer)', attributes=['distinguishedName', 'name'])
-            computers = [entry for entry in conn.entries]
+            # The connection is now closed, but we have the data in 'ous' and 'computers' lists
+
             
             # Build a hierarchical tree structure
             

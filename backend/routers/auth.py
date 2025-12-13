@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel import Session, select
 from datetime import timedelta
@@ -49,7 +50,10 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             headers={"WWW-Authenticate": "Bearer"},
         )
         
-    if not verify_password(form_data.password, user.hashed_password):
+    # Bug Fix: Run CPU-bound bcrypt in threadpool to prevent blocking async loop
+    is_correct_password = await run_in_threadpool(verify_password, form_data.password, user.hashed_password)
+    
+    if not is_correct_password:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",

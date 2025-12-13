@@ -73,44 +73,41 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
         # But 'software' is in session.
         return len([s for s in others if s.id != software_id]) == 0
 
-    if software.download_url:
-        # Check if it is a local file (starts with /static/)
-        if software.download_url.startswith("/static/"):
-            filename = os.path.basename(software.download_url)
-            # Security: Ensure we only delete from our uploads folder
-            safe_filename = os.path.basename(filename)
-            file_path = os.path.join("uploads", safe_filename)
-            
-            if is_file_unique(software.download_url):
-                if os.path.exists(file_path) and os.path.isfile(file_path):
-                    try:
-                        os.remove(file_path)
-                        print(f"Deleted file: {file_path}")
-                    except Exception as e:
-                        print(f"Error deleting file {file_path}: {e}")
-            else:
-                 print(f"Skipping file deletion for {file_path} (Shared by other software)")
+    # Collect files to delete but wait until AFTER commit
+    files_to_delete = []
+
+    if software.download_url and software.download_url.startswith("/static/"):
+        filename = os.path.basename(software.download_url)
+        safe_filename = os.path.basename(filename)
+        file_path = os.path.join("uploads", safe_filename)
+        
+        if is_file_unique(software.download_url):
+             files_to_delete.append(file_path)
         else:
-            print(f"Skipping file deletion for external URL: {software.download_url}")
-            
-    # Fix: Also delete the icon file if it is local
+             print(f"Skipping file deletion for {file_path} (Shared)")
+
     if software.icon_url and software.icon_url.startswith("/static/"):
         icon_filename = os.path.basename(software.icon_url)
         safe_icon_filename = os.path.basename(icon_filename)
         icon_path = os.path.join("uploads", safe_icon_filename)
         
         if is_file_unique(software.icon_url):
-            if os.path.exists(icon_path) and os.path.isfile(icon_path):
-                try:
-                    os.remove(icon_path)
-                    print(f"Deleted icon file: {icon_path}")
-                except Exception as e:
-                    print(f"Error deleting icon file {icon_path}: {e}")
+            files_to_delete.append(icon_path)
         else:
              print(f"Skipping icon deletion for {icon_path} (Shared)")
 
     session.delete(software)
     session.commit()
+    
+    # Fix: Delete files only after successful commit
+    for fpath in files_to_delete:
+        if os.path.exists(fpath) and os.path.isfile(fpath):
+            try:
+                os.remove(fpath)
+                print(f"Deleted file: {fpath}")
+            except Exception as e:
+                print(f"Error deleting file {fpath}: {e}")
+
     return {"status": "deleted", "id": software_id}
 
 @router.get("/ad/tree")
@@ -344,6 +341,14 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
         raise HTTPException(status_code=400, detail="Invalid file extension. Only .msi, .exe are allowed.")
 
     file_path = os.path.join(UPLOAD_DIR, filename)
+    
+    # Fix: Prevent overwrites by auto-renaming
+    if os.path.exists(file_path):
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        name, extension = os.path.splitext(filename)
+        filename = f"{name}_{timestamp}{extension}"
+        file_path = os.path.join(UPLOAD_DIR, filename)
     
     # Run blocking I/O in a worker thread and ensure the target file handle is closed.
     def _write_upload():
