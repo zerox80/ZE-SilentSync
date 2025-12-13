@@ -41,6 +41,39 @@ class LDAPService:
             ]
         }
 
+    def resolve_machine_ou(self, hostname: str, session: Optional[Session] = None) -> str:
+        """Finds the DN for a given hostname."""
+        if settings.AGENT_ONLY:
+            return f"CN={hostname},OU=Agents,DC=local"
+            
+        if settings.USE_MOCK_LDAP:
+            # Search in mock structure
+            # Logic: Helper to traverse tree
+            def find_computer(node, name):
+                if node.get("type") == "computer" and node.get("name").lower() == name.lower():
+                    return node.get("id")
+                for child in node.get("children", []):
+                    res = find_computer(child, name)
+                    if res: return res
+                return None
+            
+            res = find_computer(self.mock_structure, hostname)
+            return res or "Unknown"
+
+        # Real LDAP
+        try:
+             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
+             conn = Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True)
+             
+             # Search for computer
+             conn.search(settings.AD_BASE_DN, f'(&(objectClass=computer)(name={hostname}))', attributes=['distinguishedName'])
+             if conn.entries:
+                 return str(conn.entries[0].distinguishedName)
+             return "Unknown"
+        except Exception as e:
+            print(f"LDAP Lookup Error: {e}")
+            return "Unknown"
+
     def get_ou_tree(self, session: Optional[Session] = None) -> Dict[str, Any]:
         """Returns the full OU structure."""
         if settings.AGENT_ONLY:

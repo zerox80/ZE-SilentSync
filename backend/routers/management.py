@@ -116,9 +116,10 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
             # FORCE RE-INSTALL LOGIC
             if request.force_reinstall and request.action == "install":
                 # Efficiently reset links
+                machines = []
                 if target_type == "machine":
                      # For machine targets, target_dn is expected to be the machine ID or hostname. 
-                     machines = []
+                     # machines = [] # Removed local init inside if block
                      try:
                         machine_id = int(target_dn)
                         found = session.get(Machine, machine_id)

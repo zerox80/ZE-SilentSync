@@ -33,9 +33,23 @@ def heartbeat(
         from config import settings
         
         # Determine OU Path
+        # Determine OU Path
         ou_path = "Unknown"
         if settings.AGENT_ONLY:
             ou_path = "OU=Agents,DC=local"
+        else:
+            # Resolve for new machines or explicit unknown
+            should_resolve = False
+            if not machine:
+                should_resolve = True
+            elif machine.ou_path == "Unknown":
+                should_resolve = True
+            else:
+                ou_path = machine.ou_path
+                
+            if should_resolve:
+                from ldap_service import ldap_service
+                ou_path = ldap_service.resolve_machine_ou(hostname, session)
     
         if not machine:
             # Check if hostname already exists (to prevent Unique Constraint Error)
@@ -64,7 +78,7 @@ def heartbeat(
             if machine.api_key:
                 token_header = request.headers.get("X-Machine-Token")
                 # Handle case where header might be missing or different
-                if not token_header or token_header != machine.api_key:
+                if not token_header or not secrets.compare_digest(token_header, machine.api_key):
                      print(f"SECURITY ALERT: Invalid Machine Token for heartbeat from {mac_address}")
                      raise HTTPException(status_code=403, detail="Invalid Machine Token")
 
@@ -314,8 +328,8 @@ def acknowledge_task(
         raise HTTPException(status_code=404, detail="Machine not found")
         
     if machine.api_key:
-        if token_header != machine.api_key:
-             print(f"SECURITY WARNING: Invalid Machine Token for {data.mac_address}. Expected {machine.api_key[:5]}... got {token_header}")
+        if not token_header or not secrets.compare_digest(token_header, machine.api_key):
+             print(f"SECURITY WARNING: Invalid Machine Token for {data.mac_address}. Token mismatch.")
              raise HTTPException(status_code=403, detail="Invalid Machine Token")
 
     # Update or Create Link
@@ -375,7 +389,7 @@ def log_agent_event(
         # Security: Verify Machine Token
         token_header = request.headers.get("X-Machine-Token")
         if machine.api_key:
-             if token_header != machine.api_key:
+             if not token_header or not secrets.compare_digest(token_header, machine.api_key):
                  print(f"SECURITY WARNING: Invalid Machine Token for log from {mac_address}")
                  # For logs, we might just drop it, but 403 is safer to signal misconfig
                  return {"status": "ignored", "reason": "invalid_token"}
