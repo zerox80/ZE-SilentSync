@@ -21,8 +21,11 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     # Logic moved to main.py "on_startup" to avoid Race Conditions and Performance hit on every login.
 
     # 2. Try LDAP Auth
-    # Fix: Enable LDAP Authentication
-    if ldap_service.verify_user(form_data.username, form_data.password):
+    # 2. Try LDAP Auth
+    # Fix: Enable LDAP Authentication with status check
+    ldap_status = ldap_service.verify_user(form_data.username, form_data.password)
+    
+    if ldap_status == "SUCCESS":
         # If LDAP auth succeeds, we ensure the user exists in our local admin table (cache)
         # so they can have a role, etc.
         statement = select(Admin).where(Admin.username == form_data.username)
@@ -49,6 +52,16 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             data={"sub": user.username}, expires_delta=access_token_expires
         )
         return {"access_token": access_token, "token_type": "bearer"}
+    elif ldap_status == "INVALID_CREDENTIALS":
+        # SECURITY FIX: Prevent local fallback if AD says credentials are invalid
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password (AD Rejected)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    # If "NOT_FOUND" or "ERROR", fall through to DB Check
+    # This allows local-only admins (NOT_FOUND in AD) to login.
+    # And allows cached login if AD is down (ERROR).
     
     # 3. DB Auth (Fallback/Cache)
     statement = select(Admin).where(Admin.username == form_data.username)

@@ -66,8 +66,10 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     files_to_delete = []
     
     # Bug 2 Fix: Check for file usage AFTER the commit to ensure we see the updated state
-    # This might still have a tiny race if another transaction inserts a reference between our commit and this check,
-    # but it's much safer than checking BEFORE delete.
+    # We must delete the software record and commit to update the state for the check below.
+    session.delete(software)
+    session.commit()
+    
     # Ideally, we would rely on a garbage collector process, but for this scope:
     if software.download_url and software.download_url.startswith("/static/"):
         filename = os.path.basename(software.download_url)
@@ -158,8 +160,12 @@ class BulkDeploymentRequest(SQLModel):
 @router.post("/deploy/bulk")
 def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     # Fix: Validate all software IDs first
+    # Fix: Validate all software IDs first (Batch check)
+    softwares = session.exec(select(Software).where(Software.id.in_(request.software_ids))).all()
+    found_ids = {s.id for s in softwares}
+    
     for sid in request.software_ids:
-        if not session.get(Software, sid):
+        if sid not in found_ids:
              raise HTTPException(status_code=400, detail=f"Software ID {sid} not found")
 
     # 1. Resolve all target machines once
@@ -329,10 +335,7 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
                  # Let's try the constructed 'file_path' first.
                  
                  # But we need atomic open.
-                 if os.path.exists(file_path):
-                     # If exists, force rename logic immediately
-                     raise FileExistsError
-                     
+                 # Removed os.path.exists check to prevent TOCTOU. "xb" is atomic.
                  file_handle = open(file_path, "xb")
                  final_file_path = file_path
                  break

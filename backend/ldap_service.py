@@ -44,41 +44,37 @@ class LDAPService:
         }
 
     def verify_user(self, username, password):
-        """Verifies credentials against AD."""
+        """Verifies credentials against AD. Returns status string."""
         if settings.USE_MOCK_LDAP:
             # Mock Auth
-            return True # In mock mode, any password works for 'admin' usually, or check specifically
+            return "SUCCESS" # In mock mode, any password works for 'admin' usually
             
         try:
              # Fix: Use AD_SERVER and bind with the user's credentials
-             # Note: username might need domain prefix/suffix depending on AD setup
-             # Try binding with the provided credentials directly
-             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
+             from ldap3.core.exceptions import LDAPBindError
              
-             # Try simple bind (assuming username is UPN or DN, or we might need to find DN first)
-             # A common pattern is to bind with service account, find user DN, then re-bind.
-             # But let's try assuming UPN or DOMAIN\User format if provided, or append domain.
-             # Limit risk: just try to bind.
-             user_dn = username
-             if "@" not in username and "\\" not in username:
-                 # Attempt to construct UPN if plain username
-                 # user_dn = f"{username}@{settings.AD_USER.split('@')[-1]}" # simplistic
-                 pass
+             try:
+                 server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=5)
                  
-             # Better: Connect with service account, search for user DN, then bind.
-             with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
-                 conn.search(settings.AD_BASE_DN, f'(&(objectClass=user)(sAMAccountName={escape_filter_chars(username)}))', attributes=['distinguishedName'])
-                 if not conn.entries:
-                     return False
-                 user_dn = str(conn.entries[0].distinguishedName)
-                 
-             # Verify password by binding as that user
-             with Connection(server, user=user_dn, password=password, auto_bind=True):
-                 return True
+                 # 1. Search for User DN
+                 # Bind with service account first
+                 with Connection(server, user=settings.AD_USER, password=settings.AD_PASSWORD, auto_bind=True) as conn:
+                     conn.search(settings.AD_BASE_DN, f'(&(objectClass=user)(sAMAccountName={escape_filter_chars(username)}))', attributes=['distinguishedName'])
+                     if not conn.entries:
+                         return "NOT_FOUND"
+                     user_dn = str(conn.entries[0].distinguishedName)
+                     
+                 # 2. Verify password by binding as that user
+                 # This raises LDAPBindError if password is wrong
+                 with Connection(server, user=user_dn, password=password, auto_bind=True):
+                     return "SUCCESS"
+                     
+             except LDAPBindError:
+                 return "INVALID_CREDENTIALS"
                  
         except Exception as e:
             print(f"LDAP Auth Error: {e}")
-            return False
+            return "ERROR"
 
     def resolve_machine_ou(self, hostname: str, session: Optional[Session] = None) -> str:
         """Finds the DN for a given hostname."""

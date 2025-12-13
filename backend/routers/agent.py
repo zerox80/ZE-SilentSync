@@ -116,7 +116,12 @@ def heartbeat(
             machine.hostname = hostname
             machine.os_info = os_info
             # Ip Address Security / IDOR prep
-            if request.client and request.client.host:
+            # Ip Address Security / IDOR prep
+            # Fix: Trust X-Forwarded-For if available (behind proxy)
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                 machine.ip_address = forwarded.split(",")[0].strip()
+            elif request.client and request.client.host:
                  machine.ip_address = request.client.host
                  
             # Fix: Always update OU path to keep it fresh from AD/Logic
@@ -143,41 +148,51 @@ def heartbeat(
                 print(f"WARNING: Race condition detected for {hostname} (IntegrityError). Retrying with new hostname...")
                 
                 # Retry logic with collision handling
+                # Retry logic with collision handling
                 try: 
                     # 1. Generate new unique hostname suffix
-                    # We can't reuse the code easily without a loop, so let's do a meaningful one-time retry
                     suffix = secrets.token_hex(2)
                     new_hostname = f"{data.hostname}-dup-{suffix}"
                     
-                    # 2. Re-instantiate machine object (can't reuse the failed attached object easily)
-                    # Fetch OU again just in case
-                    machine_retry = Machine(
-                        hostname=new_hostname, # New Name
-                        mac_address=mac_address, 
-                        os_info=os_info,
-                        last_seen=datetime.utcnow(),
-                        ou_path=ou_path,
-                        api_key=secrets.token_urlsafe(32) # New Token
-                    )
+                    # 2. Check if conflict was MAC or Hostname
+                    # Try to find by MAC again
+                    existing_machine = session.exec(select(Machine).where(Machine.mac_address == mac_address)).first()
                     
-                    session.add(machine_retry)
+                    if existing_machine:
+                         # It was an update collision or someone inserted same MAC
+                         machine = existing_machine
+                         machine.hostname = new_hostname
+                         machine.last_seen = datetime.utcnow()
+                         machine.ou_path = ou_path
+                         # Merge/Add
+                         session.add(machine)
+                    else:
+                        # It was a hostname collision on INSERT, and MAC is unused
+                        machine_retry = Machine(
+                            hostname=new_hostname, # New Name
+                            mac_address=mac_address, 
+                            os_info=os_info,
+                            last_seen=datetime.utcnow(),
+                            ou_path=ou_path,
+                            api_key=secrets.token_urlsafe(32) # New Token
+                        )
+                        session.add(machine_retry)
+                        machine = machine_retry
+
                     session.commit()
-                    session.refresh(machine_retry)
-                    machine = machine_retry
+                    session.refresh(machine)
                     print(f"Recovered from race condition. New hostname: {machine.hostname}")
                     
                 except Exception as retry_e:
                      # If it fails again, we give up to avoid infinite loops
                      print(f"ERROR: Failed to recover from race condition: {retry_e}")
-                     raise HTTPException(status_code=409, detail="Hostname collision could not be resolved.")
+                     # Try to fetch state one last time? No, just fail.
+                     session.rollback()
                      
-            else:
-                 # Other DB error
-                 print(f"WARNING: Database commit failed: {e}")
-                 # Try to fetch fresh state to return tasks
-                 machine = session.exec(select(Machine).where(Machine.mac_address == mac_address)).first()
-                 if not machine:
-                      raise HTTPException(status_code=500, detail="Internal Server Error during registration.")
+                     # Final attempt: Just return what's in DB if exists
+                     machine = session.exec(select(Machine).where(Machine.mac_address == mac_address)).first()
+                     if not machine:
+                          raise HTTPException(status_code=409, detail="Hostname collision could not be resolved.")
         
         # --- Task Resolution Logic ---
         current_time = datetime.utcnow()
@@ -243,6 +258,15 @@ def heartbeat(
         
         from models import MachineSoftwareLink
     
+        # Fix N+1: Fetch all links at once
+        dep_software_ids = [d.software_id for d in potential_deployments]
+        existing_links = session.exec(select(MachineSoftwareLink).where(
+            (MachineSoftwareLink.machine_id == machine.id) &
+            (MachineSoftwareLink.software_id.in_(dep_software_ids))
+        )).all()
+        # Map by software_id
+        links_map = {link.software_id: link for link in existing_links}
+
         for dep in potential_deployments:
             # Deduplication: If we already have a task for this software in this batch, skip.
             if dep.software_id in processed_software_ids:
@@ -292,10 +316,8 @@ def heartbeat(
             # Software Check
             if dep.software:
                 # CHECK IF ALREADY INSTALLED / UNINSTALLED
-                link = session.exec(select(MachineSoftwareLink).where(
-                    (MachineSoftwareLink.machine_id == machine.id) &
-                    (MachineSoftwareLink.software_id == dep.software_id)
-                )).first()
+                # Use pre-fetched map
+                link = links_map.get(dep.software_id)
                 
                 # If Action is INSTALL
                 if dep.action == "install":
@@ -475,7 +497,9 @@ def log_agent_event(
             (AgentLog.machine_id == machine.id) & 
             (AgentLog.timestamp > cutoff)
         )
-        log_count = session.exec(statement).one()
+        log_count_res = session.exec(statement).first()
+        # Extract scalar
+        log_count = log_count_res if isinstance(log_count_res, int) else log_count_res[0] if log_count_res else 0
         
         if log_count > 60:
             print(f"Rate Limit Exceeded for {machine.hostname}")
