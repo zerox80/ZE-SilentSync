@@ -58,9 +58,21 @@ def heartbeat(
             
             if machine_by_host:
                 # Machine exists with different MAC -> Prevent Hijacking unless explicit admin action?
-                # For now, we BLOCK it to fix the security hole.
-                print(f"SECURITY WARNING: Hostname {hostname} collision. Request MAC: {mac_address}, Known MAC: {machine_by_host.mac_address}")
-                raise HTTPException(status_code=409, detail="Hostname conflict. Contact Administrator.")
+                # Fix: Handle collision by renaming instead of DoS/Blocking
+                suffix = secrets.token_hex(2)
+                new_hostname = f"{hostname}-dup-{suffix}"
+                print(f"Hostname conflict for {hostname}. Renaming to {new_hostname}")
+                hostname = new_hostname
+                
+                # Now create with new hostname
+                machine = Machine(
+                    hostname=hostname, 
+                    mac_address=mac_address, 
+                    os_info=os_info,
+                    last_seen=datetime.utcnow(),
+                    ou_path=ou_path
+                )
+                session.add(machine)
             else:
                 # New Machine
                 machine = Machine(
@@ -87,15 +99,19 @@ def heartbeat(
                 statement_host = select(Machine).where(Machine.hostname == hostname)
                 machine_by_host = session.exec(statement_host).first()
                 
-                if machine_by_host:
+            if machine_by_host:
                     # Hostname collision! 
-                    # WE MUST BLOCK THIS too to prevent renaming into an existing target.
-                    print(f"SECURITY WARNING: Machine {machine.mac_address} tried to change hostname to {hostname}, which is already claimed by {machine_by_host.mac_address}")
-                    raise HTTPException(status_code=409, detail="Hostname conflict. Contact Administrator.")
+                    # Fix: Handle collision by renaming instead of DoS
+                    suffix = secrets.token_hex(2) 
+                    new_hostname = f"{hostname}-dup-{suffix}"
+                    print(f"SECURITY WARNING: Machine {machine.mac_address} tried to change hostname to {hostname}, which is claimed. Renaming to {new_hostname}")
+                    hostname = new_hostname
+                    # Continue with new hostname
                     
                     # OLD LOGIC REMOVED security fix
                     # session.delete(machine) ...
             
+        # Update machine details
             machine.last_seen = datetime.utcnow()
             machine.hostname = hostname
             machine.os_info = os_info
@@ -103,8 +119,8 @@ def heartbeat(
             if request.client and request.client.host:
                  machine.ip_address = request.client.host
                  
-            if settings.AGENT_ONLY:
-                 machine.ou_path = ou_path
+            # Fix: Always update OU path to keep it fresh from AD/Logic
+            machine.ou_path = ou_path
             session.add(machine)
         
         # --- Token Rotation / Provisioning ---

@@ -5,7 +5,7 @@ from sqlmodel import Session, select, SQLModel
 from typing import List
 from database import get_session
 from auth import get_current_admin
-from models import Software, Deployment, Machine, Admin, MachineSoftwareLink, SoftwareDependency
+from models import Software, Deployment, Machine, Admin, MachineSoftwareLink, SoftwareDependency, AuditLog
 from datetime import datetime
 from ldap_service import ldap_service
 
@@ -16,23 +16,33 @@ def get_software(session: Session = Depends(get_session)):
     return session.exec(select(Software)).all()
 
 @router.post("/software", response_model=Software)
-def create_software(software: Software, session: Session = Depends(get_session)):
+def create_software(software: Software, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     session.add(software)
     session.commit()
     session.refresh(software)
+    
+    # Audit Log
+    session.add(AuditLog(
+        admin_id=admin.id, 
+        action="create_software", 
+        target=software.name, 
+        details=f"Version: {software.version}",
+        level="INFO"
+    ))
+    session.commit()
+    
     return software
 
 @router.delete("/software/{software_id}")
-def delete_software(software_id: int, session: Session = Depends(get_session)):
+def delete_software(software_id: int, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     software = session.get(Software, software_id)
     if not software:
         raise HTTPException(status_code=404, detail="Software not found")
     
-    # Optional: Check for existing deployments or links and decide whether to block or cascade.
-    # For now, we'll just delete the software record. SQLModel/SQLAlchemy might error if foreign keys exist 
-    # and cascade isn't set, but let's assume simple deletion for now or let the error bubble up.
-    # Better to manually clean up if needed, but user just wants "delete".
-    
+    # Audit Log Entry
+    log = AuditLog(admin_id=admin.id, action="delete_software", target=software.name, level="INFO")
+    session.add(log) # Add early, commit later
+
     # Delete associated deployments?
     deployments = session.exec(select(Deployment).where(Deployment.software_id == software_id)).all()
     for dep in deployments:
@@ -53,39 +63,51 @@ def delete_software(software_id: int, session: Session = Depends(get_session)):
 
     # Delete the actual file from disk
     import os
+    
+    # Fix: Check shared usage before deletion
+    def is_file_unique(url):
+        # We query software table. Since we haven't deleted 'software' record yet, count should be > 1 if shared.
+        # If count == 1, it's only this record.
+        others = session.exec(select(Software).where((Software.download_url == url) | (Software.icon_url == url))).all()
+        # Filter strictly those that are NOT the current one (just in case session state matches)
+        # But 'software' is in session.
+        return len([s for s in others if s.id != software_id]) == 0
+
     if software.download_url:
         # Check if it is a local file (starts with /static/)
         if software.download_url.startswith("/static/"):
             filename = os.path.basename(software.download_url)
             # Security: Ensure we only delete from our uploads folder
-            # Verify filename doesn't have path traversal attempts (though basename helps)
             safe_filename = os.path.basename(filename)
             file_path = os.path.join("uploads", safe_filename)
             
-            if os.path.exists(file_path):
-                # Double check to prevent deleting something not meant to be deleted
-                # (Simple check: is it a file?)
-                if os.path.isfile(file_path):
+            if is_file_unique(software.download_url):
+                if os.path.exists(file_path) and os.path.isfile(file_path):
                     try:
                         os.remove(file_path)
                         print(f"Deleted file: {file_path}")
                     except Exception as e:
                         print(f"Error deleting file {file_path}: {e}")
+            else:
+                 print(f"Skipping file deletion for {file_path} (Shared by other software)")
         else:
             print(f"Skipping file deletion for external URL: {software.download_url}")
             
     # Fix: Also delete the icon file if it is local
     if software.icon_url and software.icon_url.startswith("/static/"):
         icon_filename = os.path.basename(software.icon_url)
-        # Security: basic basename check again
         safe_icon_filename = os.path.basename(icon_filename)
         icon_path = os.path.join("uploads", safe_icon_filename)
-        if os.path.exists(icon_path) and os.path.isfile(icon_path):
-            try:
-                os.remove(icon_path)
-                print(f"Deleted icon file: {icon_path}")
-            except Exception as e:
-                print(f"Error deleting icon file {icon_path}: {e}")
+        
+        if is_file_unique(software.icon_url):
+            if os.path.exists(icon_path) and os.path.isfile(icon_path):
+                try:
+                    os.remove(icon_path)
+                    print(f"Deleted icon file: {icon_path}")
+                except Exception as e:
+                    print(f"Error deleting icon file {icon_path}: {e}")
+        else:
+             print(f"Skipping icon deletion for {icon_path} (Shared)")
 
     session.delete(software)
     session.commit()
@@ -100,9 +122,15 @@ def get_machines(session: Session = Depends(get_session)):
     return session.exec(select(Machine)).all()
 
 @router.post("/deploy")
-def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session)):
+def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     if not target_dn or not target_dn.strip():
         raise HTTPException(status_code=400, detail="Target DN cannot be empty")
+        
+    # Fix: Validate software existence
+    software = session.get(Software, software_id)
+    if not software:
+        raise HTTPException(status_code=404, detail="Software not found")
+
     # Logic to resolve target (OU or Machine) and create deployment records
     # For simplicity, we just create a Deployment record. 
     # In a real app, if target is OU, we might expand to all machines in that OU immediately or let a background task do it.
@@ -111,9 +139,20 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
         software_id=software_id,
         target_value=target_dn,
         target_type=target_type,
-        action=action
+        action=action,
+        created_by=admin.id
     )
     session.add(deployment)
+    
+    # Audit Log
+    session.add(AuditLog(
+        admin_id=admin.id,
+        action="create_deployment",
+        target=target_dn,
+        details=f"Software: {software.name}, Action: {action}",
+        level="INFO"
+    ))
+    
     session.commit()
     session.refresh(deployment)
     return {"status": "deployment scheduled"}
@@ -125,8 +164,14 @@ class BulkDeploymentRequest(SQLModel):
     force_reinstall: bool = False
 
 @router.post("/deploy/bulk")
-def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session)):
+def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     count = 0
+    
+    # Fix: Validate all software IDs first
+    for sid in request.software_ids:
+        if not session.get(Software, sid):
+             raise HTTPException(status_code=400, detail=f"Software ID {sid} not found")
+             
     for software_id in request.software_ids:
         for target_dn in request.target_dns:
             if not target_dn or not target_dn.strip():
@@ -187,7 +232,8 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                 software_id=software_id,
                 target_value=target_dn,
                 target_type=target_type,
-                action=request.action
+                action=request.action,
+                created_by=admin.id
             )
             session.add(deployment)
             
@@ -259,6 +305,15 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                         session.add(link)
                         
             count += 1
+    
+    # Audit Log
+    session.add(AuditLog(
+        admin_id=admin.id,
+        action="create_bulk_deployment",
+        target=f"{len(request.target_dns)} targets",
+        details=f"Software IDs: {request.software_ids}, Count: {count}",
+        level="INFO"
+    ))
             
     session.commit()
     return {"status": "bulk deployment scheduled", "count": count}
