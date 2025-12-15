@@ -161,12 +161,14 @@ fn find_uninstall_command(software_name: &str) -> Option<String> {
         "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
     ];
 
-    // Extract keywords from software_name for fuzzy matching
+    // Extract keywords from software_name for fuzzy matching (Fallback)
     // e.g., "BraveBrowserStandaloneSilentNightlySetup" -> ["brave", "browser", "nightly"]
     let keywords: Vec<String> = extract_keywords(software_name);
-    info!("Searching registry for software with keywords: {:?}", keywords);
+    let software_name_clean = software_name.trim().to_lowercase();
     
-    let mut best_match: Option<(String, usize)> = None; // (uninstall_command, match_score)
+    info!("Searching registry for software: '{}' (Keywords: {:?})", software_name, keywords);
+    
+    let mut best_fuzzy_match: Option<(String, usize)> = None; // (uninstall_command, match_score)
 
     for hive in hives {
         let root = RegKey::predef(hive);
@@ -175,31 +177,45 @@ fn find_uninstall_command(software_name: &str) -> Option<String> {
                 for name in key.enum_keys().filter_map(|x| x.ok()) {
                     if let Ok(subkey) = key.open_subkey(&name) {
                         let display_name: String = subkey.get_value("DisplayName").unwrap_or_default();
-                        let display_name_lower = display_name.to_lowercase();
+                        let display_name_lower = display_name.trim().to_lowercase();
                         
+                        // 1. EXACT MATCH CHECK (Priority)
+                        if display_name_lower == software_name_clean {
+                             info!("Found EXACT MATCH for '{}'", display_name);
+                             // Try QuietUninstallString first, then UninstallString
+                             if let Ok(cmd) = subkey.get_value::<String, _>("QuietUninstallString") {
+                                 info!("Using QuietUninstallString: {}", cmd);
+                                 return Some(cmd);
+                             } else if let Ok(cmd) = subkey.get_value::<String, _>("UninstallString") {
+                                 info!("Using UninstallString: {}", cmd);
+                                 return Some(cmd);
+                             }
+                        }
+
+                        // 2. Fuzzy Match (Fallback)
                         // Calculate match score (how many keywords match)
                         let match_score = keywords.iter()
                             .filter(|kw| display_name_lower.contains(kw.as_str()))
                             .count();
                         
                         // Require at least 2 keywords to match, or 1 if there's only 1 keyword
-                        let min_required = if keywords.len() == 1 { 1 } else { 2 };
+                        let min_required = if keywords.len() <= 1 { 1 } else { 2 };
                         
                         if match_score >= min_required {
                             // Check if this is the best match so far
-                            let is_better = match &best_match {
+                            let is_better = match &best_fuzzy_match {
                                 None => true,
                                 Some((_, prev_score)) => match_score > *prev_score,
                             };
                             
                             if is_better {
                                 // Try QuietUninstallString first, then UninstallString
-                                if let Ok(cmd) = subkey.get_value::<String, _>("QuietUninstallString") {
-                                    info!("Found QuietUninstallString for '{}' (score: {}): {}", display_name, match_score, cmd);
-                                    best_match = Some((cmd, match_score));
-                                } else if let Ok(cmd) = subkey.get_value::<String, _>("UninstallString") {
-                                    info!("Found UninstallString for '{}' (score: {}): {}", display_name, match_score, cmd);
-                                    best_match = Some((cmd, match_score));
+                                let cmd_opt = subkey.get_value::<String, _>("QuietUninstallString")
+                                    .or_else(|_| subkey.get_value::<String, _>("UninstallString"));
+                                
+                                if let Ok(cmd) = cmd_opt {
+                                    info!("Found Candidate Match for '{}' (score: {}): {}", display_name, match_score, cmd);
+                                    best_fuzzy_match = Some((cmd, match_score));
                                 }
                             }
                         }
@@ -209,7 +225,13 @@ fn find_uninstall_command(software_name: &str) -> Option<String> {
         }
     }
     
-    best_match.map(|(cmd, _)| cmd)
+    // If no exact match returned, return the best fuzzy match
+    if let Some((cmd, score)) = best_fuzzy_match {
+        info!("No exact match found. Using best fuzzy match (score: {}): {}", score, cmd);
+        return Some(cmd);
+    }
+    
+    None
 }
 
 /// Extract meaningful keywords from a software name
