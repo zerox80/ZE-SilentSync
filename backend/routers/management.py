@@ -241,6 +241,203 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
     session.refresh(deployment)
     return {"status": "deployment scheduled"}
 
+@router.get("/deployments")
+def get_deployments(session: Session = Depends(get_session)):
+    """Get all ACTIVE/PENDING deployments (hides completed ones)."""
+    from sqlalchemy.orm import joinedload
+    
+    # 1. Fetch all deployments
+    statement = select(Deployment).options(joinedload(Deployment.software)).order_by(Deployment.created_at.desc())
+    all_deployments = session.exec(statement).all()
+    
+    # 2. Gather targets to resolve status
+    machine_targets = set()
+    for dep in all_deployments:
+        if dep.target_type == "machine":
+            machine_targets.add(dep.target_value)
+            
+    # 3. Resolve targets to Machine IDs
+    # Map target_value -> machine_id
+    target_map = {}
+    if machine_targets:
+        # Check for IDs
+        numeric_ids = {int(t) for t in machine_targets if t.isdigit()}
+        # Check for Hostnames (approximate)
+        hostnames = {t for t in machine_targets if not t.isdigit()}
+        
+        # Query 1: By ID
+        if numeric_ids:
+            ms = session.exec(select(Machine).where(Machine.id.in_(numeric_ids))).all()
+            for m in ms:
+                target_map[str(m.id)] = m.id
+        
+        # Query 2: By Hostname (or CN=...)
+        # Simplifying assumption: target_value is hostname or CN=hostname
+        if hostnames:
+            # We can't easily bulk query partial matches.
+            # But we can try to bulk query exact hostnames
+            # Clean targets
+            clean_hosts = set()
+            clean_map = {} # clean_host -> original_target
+            for h in hostnames:
+                val = h.lower()
+                if val.startswith("cn="):
+                    val = val.split(",")[0].split("=")[1].strip()
+                clean_hosts.add(val)
+                clean_map[val] = h
+            
+            ms = session.exec(select(Machine).where(Machine.hostname.in_(clean_hosts))).all()
+            for m in ms:
+                h_clean = m.hostname.lower()
+                # Find which original target this matches
+                # If target was "TP-IT01", matches. If "CN=TP-IT01", matches.
+                # In clean_map?
+                # This reverse mapping is tricky if many-to-one.
+                # Simple loop:
+                for target_val in hostnames:
+                     t_clean = target_val.lower()
+                     if t_clean.startswith("cn="):
+                         t_clean = t_clean.split(",")[0].split("=")[1].strip()
+                     
+                     if t_clean == h_clean:
+                         target_map[target_val] = m.id
+
+    # 4. Fetch Links for relevant (Machine, Software) pairs
+    # Optimize: Fetch all links for these machines?
+    # Or just fetch all links for the machines involved in deployments?
+    resolved_machine_ids = set(target_map.values())
+    
+    links_map = {} # (machine_id, software_id) -> status
+    
+    if resolved_machine_ids:
+        # Fetch status for these machines
+        # We also care about the software IDs in deployments
+        # But fetching all links for these machines is probably okay (hundreds not millions)
+        # Better: Filter by software too?
+        # Let's just fetch links for these machines.
+        l_stmt = select(MachineSoftwareLink).where(MachineSoftwareLink.machine_id.in_(resolved_machine_ids))
+        links = session.exec(l_stmt).all()
+        for l in links:
+            links_map[(l.machine_id, l.software_id)] = l.status
+            
+    # 5. Filter List
+    result = []
+    for dep in all_deployments:
+        if dep.target_type == "ou":
+            # Always show OU policies (they are persistent)
+            result.append(dep)
+        elif dep.target_type == "machine":
+            m_id = target_map.get(dep.target_value)
+            
+            # If machine not found, show it (it's pending/error state effectively)
+            if not m_id:
+                result.append(dep)
+                continue
+                
+            status = links_map.get((m_id, dep.software_id))
+            
+            # Logic: Hide if completed
+            hide = False
+            if dep.action == "install":
+                if status == "installed": hide = True
+            elif dep.action == "uninstall":
+                if status == "uninstalled": hide = True
+                
+            if not hide:
+                result.append(dep)
+                
+    # 6. Resolve Hostnames for display
+    # We want to show "tp-it01" instead of "2"
+    # We have target_map mapping "2" -> 2 (int ID)
+    # query machines
+    
+    machine_ids = set()
+    for dep in result:
+        if dep.target_type == "machine":
+            # get resolved ID
+            mid = target_map.get(dep.target_value)
+            if mid: machine_ids.add(mid)
+            
+    id_to_hostname = {}
+    if machine_ids:
+        ms = session.exec(select(Machine).where(Machine.id.in_(machine_ids))).all()
+        for m in ms:
+            id_to_hostname[m.id] = m.hostname
+            
+    # Format Result
+    final_output = []
+    for dep in result:
+        target_display = dep.target_value
+        if dep.target_type == "machine":
+            mid = target_map.get(dep.target_value)
+            if mid and mid in id_to_hostname:
+                target_display = id_to_hostname[mid]
+        
+        final_output.append({
+            "id": dep.id,
+            "software_id": dep.software_id,
+            "target_value": dep.target_value,
+            "target_name": target_display, # NEW FIELD
+            "target_type": dep.target_type,
+            "action": dep.action,
+            "created_at": dep.created_at.isoformat() if dep.created_at else None,
+            "software": {"name": dep.software.name} if dep.software else None
+        })
+    return final_output
+
+@router.delete("/deploy/clear-all")
+def clear_all_deployments(session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
+    """Clear all pending deployments. Emergency stop for all queued tasks."""
+    
+    # Bug Fix: Enforce RBAC - only admins can clear all
+    if admin.role not in ["admin", "superadmin"]:
+        raise HTTPException(status_code=403, detail="Insufficient privileges.")
+    
+    # Count before deletion for response
+    count = len(session.exec(select(Deployment)).all())
+    
+    # Delete all deployments
+    session.exec(select(Deployment)).all()
+    for dep in session.exec(select(Deployment)).all():
+        session.delete(dep)
+    
+    # Audit Log
+    session.add(AuditLog(
+        admin_id=admin.id,
+        action="clear_all_deployments",
+        target="ALL",
+        details=f"Cleared {count} deployments",
+        level="WARNING"
+    ))
+    
+    session.commit()
+    return {"status": "cleared", "count": count}
+
+@router.delete("/deploy/{deployment_id}")
+def delete_deployment(deployment_id: int, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
+    """Delete a single deployment / cancel a pending task."""
+    
+    deployment = session.get(Deployment, deployment_id)
+    if not deployment:
+        raise HTTPException(status_code=404, detail="Deployment not found")
+    
+    # Get software name for audit log before deletion
+    software_name = deployment.software.name if deployment.software else f"ID:{deployment.software_id}"
+    
+    session.delete(deployment)
+    
+    # Audit Log
+    session.add(AuditLog(
+        admin_id=admin.id,
+        action="delete_deployment",
+        target=f"{software_name} -> {deployment.target_value}",
+        details=f"Action: {deployment.action}",
+        level="INFO"
+    ))
+    
+    session.commit()
+    return {"status": "deleted", "id": deployment_id}
+
 class BulkDeploymentRequest(SQLModel):
     software_ids: List[int]
     target_dns: List[str]

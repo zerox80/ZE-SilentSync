@@ -5,6 +5,11 @@ use std::fs::File;
 use std::io::copy;
 use log::{info, error, warn};
 use config::Config;
+#[cfg(target_os = "windows")]
+use winreg::enums::*;
+#[cfg(target_os = "windows")]
+use winreg::RegKey;
+
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 
@@ -148,6 +153,100 @@ fn get_system_info() -> SystemInfo {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn find_uninstall_command(software_name: &str) -> Option<String> {
+    let hives = [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER];
+    let paths = [
+        "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+        "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+    ];
+
+    // Extract keywords from software_name for fuzzy matching
+    // e.g., "BraveBrowserStandaloneSilentNightlySetup" -> ["brave", "browser", "nightly"]
+    let keywords: Vec<String> = extract_keywords(software_name);
+    info!("Searching registry for software with keywords: {:?}", keywords);
+    
+    let mut best_match: Option<(String, usize)> = None; // (uninstall_command, match_score)
+
+    for hive in hives {
+        let root = RegKey::predef(hive);
+        for path in paths {
+            if let Ok(key) = root.open_subkey(path) {
+                for name in key.enum_keys().filter_map(|x| x.ok()) {
+                    if let Ok(subkey) = key.open_subkey(&name) {
+                        let display_name: String = subkey.get_value("DisplayName").unwrap_or_default();
+                        let display_name_lower = display_name.to_lowercase();
+                        
+                        // Calculate match score (how many keywords match)
+                        let match_score = keywords.iter()
+                            .filter(|kw| display_name_lower.contains(kw.as_str()))
+                            .count();
+                        
+                        // Require at least 2 keywords to match, or 1 if there's only 1 keyword
+                        let min_required = if keywords.len() == 1 { 1 } else { 2 };
+                        
+                        if match_score >= min_required {
+                            // Check if this is the best match so far
+                            let is_better = match &best_match {
+                                None => true,
+                                Some((_, prev_score)) => match_score > *prev_score,
+                            };
+                            
+                            if is_better {
+                                // Try QuietUninstallString first, then UninstallString
+                                if let Ok(cmd) = subkey.get_value::<String, _>("QuietUninstallString") {
+                                    info!("Found QuietUninstallString for '{}' (score: {}): {}", display_name, match_score, cmd);
+                                    best_match = Some((cmd, match_score));
+                                } else if let Ok(cmd) = subkey.get_value::<String, _>("UninstallString") {
+                                    info!("Found UninstallString for '{}' (score: {}): {}", display_name, match_score, cmd);
+                                    best_match = Some((cmd, match_score));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    best_match.map(|(cmd, _)| cmd)
+}
+
+/// Extract meaningful keywords from a software name
+/// e.g., "BraveBrowserStandaloneSilentNightlySetup" -> ["brave", "browser", "nightly"]
+fn extract_keywords(name: &str) -> Vec<String> {
+    // Common words to filter out (not useful for matching)
+    let stop_words = ["standalone", "silent", "setup", "installer", "install", "x64", "x86", "win", "windows"];
+    
+    // Split by camelCase, underscores, dashes, and spaces
+    let mut words: Vec<String> = Vec::new();
+    let mut current_word = String::new();
+    
+    for c in name.chars() {
+        if c == '_' || c == '-' || c == ' ' || c == '.' {
+            if !current_word.is_empty() {
+                words.push(current_word.to_lowercase());
+                current_word.clear();
+            }
+        } else if c.is_uppercase() && !current_word.is_empty() {
+            // CamelCase split
+            words.push(current_word.to_lowercase());
+            current_word.clear();
+            current_word.push(c);
+        } else {
+            current_word.push(c);
+        }
+    }
+    if !current_word.is_empty() {
+        words.push(current_word.to_lowercase());
+    }
+    
+    // Filter out stop words and short words (less than 3 chars)
+    words.into_iter()
+        .filter(|w| w.len() >= 3 && !stop_words.contains(&w.as_str()))
+        .collect()
+}
+
 #[derive(Serialize, Debug)]
 struct AckRequest {
     task_id: i32,
@@ -210,10 +309,41 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
             command_path = std::path::PathBuf::from("msiexec");
             args = vec!["/x".to_string(), file_path.to_str().unwrap().to_string(), "/qn".to_string()];
         } else {
-            // Bug Fix 10: Disable Unsafe EXE Uninstall
-            // Running an EXE installer again does not guarantee uninstall; it often reinstalls.
-            warn!("Skipping uninstall for EXE {}. Generic uninstall not supported safely.", file_name);
-            return Err(format!("Generic EXE uninstall for {} is not supported safely.", file_name).into());
+            // New Registry-Based Uninstall Logic
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(cmd) = find_uninstall_command(&task.software_name) {
+                    info!("Using Registry Uninstall Command: {}", cmd);
+                    // Split command into executable and args
+                    // This is tricky because the string might be "C:\Program Files\App\uninstall.exe" /S
+                    // We need to parse this properly.
+                    // Simple heuristic: 
+                    // 1. If starts with ", find closing "
+                    // 2. Else take first token
+                    
+                    let (cmd_exe, cmd_args_str) = parse_command_string(&cmd);
+                    command_path = std::path::PathBuf::from(cmd_exe);
+                    
+                    // If it was a standard UninstallString (not quiet), append our silent args
+                    // But if it was QuietUninstallString, it might already have them. 
+                    // For safety, if the user provided silent_args, we append them? 
+                    // Implementation choice: Append user args to the registry command string.
+                    
+                    let mut new_args = split_args(&cmd_args_str);
+                    if !task.silent_args.is_empty() {
+                         new_args.extend(split_args(&task.silent_args));
+                    }
+                    args = new_args;
+                    
+                } else {
+                     warn!("Could not find uninstall command in registry for {}. Fallback to unsafe EXE?", task.software_name);
+                     return Err(format!("Registry lookup failed for {}. Generic EXE uninstall unavailable.", task.software_name).into());
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                 return Err("Registry uninstall only supported on Windows".into());
+            }
         }
     } else {
         // INSTALL
@@ -297,4 +427,24 @@ fn split_args(input: &str) -> Vec<String> {
        args.push(current_arg);
     }
     args
+}
+
+fn parse_command_string(input: &str) -> (String, String) {
+    let input = input.trim();
+    if input.starts_with('"') {
+        if let Some(end_quote) = input[1..].find('"') {
+            let real_end = end_quote + 1;
+            let exe = &input[1..real_end];
+            let rest = if real_end + 1 < input.len() { &input[real_end+1..] } else { "" };
+            return (exe.to_string(), rest.to_string());
+
+        }
+    }
+    
+    // No quotes, split by first space
+    if let Some(space) = input.find(' ') {
+        return (input[..space].to_string(), input[space+1..].to_string());
+    }
+    
+    (input.to_string(), "".to_string())
 }

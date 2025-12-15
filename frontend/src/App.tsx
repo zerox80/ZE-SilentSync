@@ -3,6 +3,7 @@ import { LayoutDashboard, AppWindow, Network, Send, LogOut } from 'lucide-react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import SoftwareLibrary from './components/SoftwareLibrary'
 import DeploymentWizard from './components/DeploymentWizard'
+import DeploymentsView from './components/DeploymentsView'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './components/Login'
 
@@ -111,12 +112,7 @@ function AppContent() {
                                 <p className="text-gray-500 mt-2">Overview of installed software and machine status will go here.</p>
                             </div>
                         } />
-                        <Route path="/deployments" element={
-                            <div className="text-center mt-20">
-                                <h2 className="text-3xl font-bold text-gray-700">Deployments Placeholder</h2>
-                                <p className="text-gray-500 mt-2">History of deployments will go here.</p>
-                            </div>
-                        } />
+                        <Route path="/deployments" element={<DeploymentsView />} />
                     </Routes>
                 </ErrorBoundary>
             </main>

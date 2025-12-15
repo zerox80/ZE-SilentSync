@@ -364,10 +364,13 @@ def heartbeat(
         )
         potential_deployments = session.exec(statement).all()
         
-        # Sort deployments to prioritize Machine (Specific) over OU (General)
-        # Assuming 'target_type' is "machine" or "ou". 
-        # We want "machine" first.
-        potential_deployments.sort(key=lambda d: 0 if d.target_type == "machine" else 1)
+        # Sort deployments to prioritize:
+        # 1. By created_at (newest first) - so latest action (install/uninstall) takes precedence
+        # 2. By target_type - Machine (specific) over OU (general)
+        potential_deployments.sort(key=lambda d: (
+            -(d.created_at.timestamp() if d.created_at else 0),  # Newest first
+            0 if d.target_type == "machine" else 1  # Machine first
+        ))
         
         print(f"DEBUG: Found {len(potential_deployments)} potential deployments.")
         
@@ -479,12 +482,18 @@ def heartbeat(
                     base_url = settings.BASE_URL.rstrip("/")
                     download_url = f"{base_url}{download_url}"
 
+                args_to_use = dep.software.silent_args
+                if dep.action == "uninstall":
+                     # Use uninstall args if present, else fallback to silent_args (or empty)
+                     if dep.software.uninstall_args:
+                         args_to_use = dep.software.uninstall_args
+
                 tasks.append({
                     "id": dep.id,
                     "type": dep.action, # install or uninstall
                     "software_name": dep.software.name,
                     "download_url": download_url,
-                    "silent_args": dep.software.silent_args,
+                    "silent_args": args_to_use,
                     "is_msi": dep.software.is_msi
                 })
                 processed_software_ids.add(dep.software_id)
