@@ -219,7 +219,7 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
                                  hostname = kv[1].strip()
                                  m = session.exec(select(Machine).where(Machine.hostname == hostname)).first()
                    
-                   if not m:
+                    if not m:
                         raise HTTPException(status_code=404, detail=f"Machine {target_dn} not found")
     elif target_type == "ou":
          # Basic validation: ensure it looks like a DN

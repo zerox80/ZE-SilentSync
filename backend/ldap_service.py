@@ -2,10 +2,19 @@ from typing import List, Dict, Any, Optional
 import re
 from ldap3 import Server, Connection, ALL, SUBTREE
 from ldap3.utils.conv import escape_filter_chars
-from ldap3.utils.dn import parse_dn, escape_dn_chars
+from ldap3.utils.dn import parse_dn
 from sqlmodel import Session, select
 from config import settings
 from models import Machine
+
+# Fallback: escape_dn_chars may not exist in all ldap3 versions
+def escape_dn_chars(s: str) -> str:
+    """Escape special characters in DN component values."""
+    # Characters that need escaping in DN values: , + " \ < > ;
+    special_chars = {',': r'\,', '+': r'\+', '"': r'\"', '\\': r'\\', '<': r'\<', '>': r'\>', ';': r'\;'}
+    for char, escaped in special_chars.items():
+        s = s.replace(char, escaped)
+    return s
 
 class LDAPService:
     def __init__(self):
@@ -84,7 +93,6 @@ class LDAPService:
         """Finds the DN for a given hostname."""
         if settings.AGENT_ONLY:
             # Fix: Use dynamic root matching configured base DN or fallback
-            from ldap3.utils.dn import escape_dn_chars
             return f"CN={escape_dn_chars(hostname)},OU=Agents,{settings.AD_BASE_DN}"
             
         if settings.USE_MOCK_LDAP:
@@ -143,7 +151,6 @@ class LDAPService:
         children_nodes = []
         for machine in machines:
             # Fix: Use configured Root
-            from ldap3.utils.dn import escape_dn_chars
             machine_dn = f"CN={escape_dn_chars(machine.hostname)},OU=Agents,{root_dn}"
             # Use ID as string for key if needed, or DN
             children_nodes.append({

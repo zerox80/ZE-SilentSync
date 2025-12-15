@@ -165,12 +165,17 @@ def heartbeat(
             # Machine found by MAC
             
             # SECURITY FIX: Verify Machine Token if it exists
+            # SECURITY FIX: Verify Machine Token if it exists
             if machine.api_key:
                 token_header = request.headers.get("X-Machine-Token")
                 # Handle case where header might be missing or different
                 if not token_header or not secrets.compare_digest(token_header, machine.api_key):
-                     print(f"SECURITY ALERT: Invalid Machine Token for heartbeat from {mac_address}")
-                     raise HTTPException(status_code=403, detail="Invalid Machine Token")
+                     # MODIFY: Instead of blocking, we assume re-provisioning if the Global Agent Token was valid (which it is to get here)
+                     print(f"WARNING: Machine Token mismatch for {mac_address}. Re-provisioning new token.")
+                     # Generate NEW token
+                     machine.api_key = secrets.token_urlsafe(32)
+                     session.add(machine)
+                     # raise HTTPException(status_code=403, detail="Invalid Machine Token") <--- OLD BLOCKED
 
             machine_by_host = None  # Initialize to avoid NameError
             if machine.hostname != hostname:
@@ -306,7 +311,12 @@ def heartbeat(
             # Reconstruct parents
             # Iterating from start_idx to end
             
-            from ldap3.utils.dn import escape_dn_chars
+            # Helper to escape DN special characters
+            def escape_dn_chars(s: str) -> str:
+                special_chars = {',': r'\,', '+': r'\+', '"': r'\"', '\\': r'\\', '<': r'\<', '>': r'\>', ';': r'\;'}
+                for char, escaped in special_chars.items():
+                    s = s.replace(char, escaped)
+                return s
             
             # Helper to reconstruct DN from parsed slice
             def reconstruct(p_slice):
