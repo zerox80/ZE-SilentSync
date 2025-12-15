@@ -40,6 +40,7 @@ class Settings:
     BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
     ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
     TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "False").lower() == "true"
+    MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", 10 * 1024 * 1024 * 1024)) # 10 GB Default
 
     def __init__(self):
         # Fix: Load from .env first, then secrets file fallback

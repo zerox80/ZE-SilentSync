@@ -656,7 +656,8 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
     file_path = os.path.join(UPLOAD_DIR, filename)
     
     # Fix: Prevent overwrites by auto-renaming
-    MAX_FILE_SIZE = 500 * 1024 * 1024
+    from config import settings
+    MAX_FILE_SIZE = settings.MAX_UPLOAD_SIZE
     
     # Bug 4 Fix: TOCTOU - Use Exclusive Creation (mode='xb') inside a loop to prevent overwrites
     # This guarantees that WE created the file and no one else exists with that name.
@@ -707,7 +708,8 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
                 if size > MAX_FILE_SIZE:
                      file_handle.close()
                      os.remove(final_file_path)
-                     raise HTTPException(status_code=413, detail="File too large (Max 500MB)")
+                     limit_mb = settings.MAX_UPLOAD_SIZE // (1024 * 1024)
+                     raise HTTPException(status_code=413, detail=f"File too large (Max {limit_mb}MB)")
                 file_handle.write(chunk)
         finally:
             file_handle.close()
