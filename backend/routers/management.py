@@ -17,13 +17,13 @@ def get_software(offset: int = 0, limit: int = 100, session: Session = Depends(g
 
 @router.post("/software", response_model=Software)
 def create_software(software: Software, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
-    # Security Fix: Validate download_url scheme
+
     if software.download_url:
         url = software.download_url.lower()
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("/static/")):
              raise HTTPException(status_code=400, detail="Invalid download_url. Must start with http://, https://, or /static/")
         
-        # Bug Fix 9: Prevent credentials in URL
+
         from urllib.parse import urlparse
         try:
              parsed_url = urlparse(url)
@@ -44,7 +44,7 @@ def create_software(software: Software, session: Session = Depends(get_session),
         if url.startswith("/static/") and ".." in url:
              raise HTTPException(status_code=400, detail="Path traversal detected in icon_url")
 
-    # Bug Fix: Enforce RBAC
+
     if admin.role not in ["admin", "superadmin"]:
         raise HTTPException(status_code=403, detail="Insufficient privileges.")
 
@@ -77,7 +77,7 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     if not software:
         raise HTTPException(status_code=404, detail="Software not found")
         
-    # Bug Fix: Enforce RBAC. Only superadmins can delete software.
+
     if admin.role != "superadmin":
         raise HTTPException(status_code=403, detail="Insufficient privileges. Required: superadmin")
     
@@ -130,7 +130,7 @@ def delete_software(software_id: int, session: Session = Depends(get_session), a
     session.delete(software)
     session.flush()
 
-    # Bug Fix 4: File Deletion Race Condition
+
     # Commit first. If that succeeds, then delete from disk.
     # This prevents the file from vanishing if the DB delete fails/rolls back.
     
@@ -165,12 +165,12 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
     if not target_dn or not target_dn.strip():
         raise HTTPException(status_code=400, detail="Target DN cannot be empty")
     
-    # Bug Fix: Validate target_type parameter
+
     valid_target_types = {"machine", "ou"}
     if target_type not in valid_target_types:
         raise HTTPException(status_code=400, detail=f"Invalid target_type. Must be one of: {', '.join(valid_target_types)}")
         
-    # Fix: Validate software existence
+
     software = session.get(Software, software_id)
     if not software:
         raise HTTPException(status_code=404, detail="Software not found")
@@ -179,12 +179,12 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
     # For simplicity, we just create a Deployment record. 
     # In a real app, if target is OU, we might expand to all machines in that OU immediately or let a background task do it.
     
-    # Bug Fix 7: Validate icon_url logic (in create_software, scrolling up)
+
     # Wait, I need to target create_deployment separately or use multi-replace? 
     # The tool call targets create_deployment logic mostly.
     # Let me fix create_deployment first.
     
-    # Bug Fix 2: Enforce RBAC
+
     if admin.role not in ["admin", "superadmin"]:
         raise HTTPException(status_code=403, detail="Insufficient privileges.")
 
@@ -196,7 +196,7 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
         created_by=admin.id
     )
     
-    # Bug Fix 6: Validate Target
+
     if target_type == "machine":
         # Check if machine ID or Hostname exists
         # Try ID first
@@ -210,7 +210,6 @@ def create_deployment(software_id: int, target_dn: str, target_type: str, action
              if not m:
                     # Try CN=Hostname
                     if target_dn.lower().startswith("cn="):
-                         # Fix: Robust parsing for DNs, taking only the first component (CN=Hostname)
                          parts = target_dn.split(",")
                          if parts:
                              # Extract value from CN=Value
@@ -389,7 +388,7 @@ def get_deployments(session: Session = Depends(get_session)):
 def clear_all_deployments(session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     """Clear all pending deployments. Emergency stop for all queued tasks."""
     
-    # Bug Fix: Enforce RBAC - only admins can clear all
+
     if admin.role not in ["admin", "superadmin"]:
         raise HTTPException(status_code=403, detail="Insufficient privileges.")
     
@@ -446,8 +445,8 @@ class BulkDeploymentRequest(SQLModel):
 
 @router.post("/deploy/bulk")
 def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
-    # Fix: Validate all software IDs first
-    # Fix: Validate all software IDs first (Batch check)
+
+
     softwares = []
     chunk_size = 500
     for i in range(0, len(request.software_ids), chunk_size):
@@ -464,7 +463,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
     # 1. Resolve all target machines once
     machines_dict = {} # Use dict for uniqueness by ID: {id: Machine}
 
-    # 1. Bulk Machine Resolution (Fix Bug 10: N+1)
+    # 1. Bulk Machine Resolution
     machines_dict = {}
     
     # Pre-classify targets
@@ -516,7 +515,7 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
                   machines_dict[m.id] = m
                   
     # Create Deployments
-    # Fix: Batch Add
+
     new_deployments = []
     for dn in request.target_dns:
          # Determine type for DB record
@@ -570,14 +569,14 @@ def create_bulk_deployment(request: BulkDeploymentRequest, session: Session = De
     
     # Proceed to Link Updates using machines_dict (already bulk resolved)
 
-    # 2. Bulk Update/Create Links (Fix N+1)
+    # 2. Bulk Update/Create Links
     if not machines_dict:
         session.commit()
         return {"status": "bulk deployment scheduled", "count": 0}
 
     all_machine_ids = list(machines_dict.keys())
     
-    # Fix: Batch queries to avoid SQLite limit (999 vars)
+
     existing_links = []
     chunk_size = 500
     for i in range(0, len(all_machine_ids), chunk_size):
@@ -647,7 +646,7 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
         raise HTTPException(status_code=400, detail="Invalid filename (Hidden files not allowed)")
 
     # Security: Validate extension
-    # Fix: Agent only supports .msi and .exe directly. Archives (.zip, .7z) cause crashes.
+
     ALLOWED_EXTENSIONS = {'.msi', '.exe'}
     ext = os.path.splitext(filename)[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
@@ -655,11 +654,11 @@ async def upload_file(file: UploadFile = File(...), session: Session = Depends(g
 
     file_path = os.path.join(UPLOAD_DIR, filename)
     
-    # Fix: Prevent overwrites by auto-renaming
+
     from config import settings
     MAX_FILE_SIZE = settings.MAX_UPLOAD_SIZE
     
-    # Bug 4 Fix: TOCTOU - Use Exclusive Creation (mode='xb') inside a loop to prevent overwrites
+
     # This guarantees that WE created the file and no one else exists with that name.
     
     final_file_path = None

@@ -51,12 +51,12 @@ def heartbeat(
 ):
     try:
         hostname = data.hostname
-        # Bug Fix 3: Normalize MAC Address
+
         # Standardize on lower case, colon-separated
         mac_address = data.mac_address.strip().lower().replace("-", ":")
         os_info = data.os_info
         
-        # Bug Fix 3: Rate Limiting for New Machine Creation (DoS Protection)
+
         # We limit specific MACs or IPs?
         # Limiting by IP for anonymous requests is good.
         # Simple In-Memory Limiter
@@ -64,31 +64,31 @@ def heartbeat(
         client_ip = get_client_ip(request)
         
         # Global limiters should be outside function, but for simplicity/module scope:
-        # Check inside lock to be safe from Race Condition (Bug Fix 1)
+
         
         # Cleanup every minute
         now = datetime.now(timezone.utc)
         
         # Thread Safety for Global Limiters
         with _rate_limit_lock:
-            # Bug Fix 1: Initialize safely inside lock
+
             if not hasattr(heartbeat, "rate_limit_store"):
                  heartbeat.rate_limit_store = {}
                  heartbeat.cleanup_time = now
 
             if (now - heartbeat.cleanup_time).total_seconds() > 60:
                  heartbeat.rate_limit_store = {}
-                 # Fix Bug 3: Clear creation store to prevent memory leak
+
                  if hasattr(heartbeat, "creation_limit_store"):
                      heartbeat.creation_limit_store = {}
                  heartbeat.cleanup_time = now
             
-            # Rate Limit Key: Use MAC Address for Heartbeat (Fix NAT Issue)
+            # Rate Limit Key: Use MAC Address for Heartbeat
             # Only use IP if MAC is missing (unlikely here) or for Creation logic
             limit_key = mac_address if mac_address else client_ip
             
             current_count = heartbeat.rate_limit_store.get(limit_key, 0)
-            # Bug Fix 7: Stricter Rate Limit (100/min instead of 2000)
+
             if current_count > 100: 
                  raise HTTPException(status_code=429, detail="Rate limit exceeded")
             heartbeat.rate_limit_store[limit_key] = current_count + 1
@@ -123,7 +123,7 @@ def heartbeat(
             statement_host = select(Machine).where(Machine.hostname == hostname)
             machine_by_host = session.exec(statement_host).first()
             
-            # Bug Fix 3: Strict Rate Limit for Creation
+
             # Store creation counts separately
             if not hasattr(heartbeat, "creation_limit_store"):
                  heartbeat.creation_limit_store = {}
@@ -138,7 +138,7 @@ def heartbeat(
             
             if machine_by_host:
                 # Machine exists with different MAC -> Prevent Hijacking unless explicit admin action?
-                # Fix: Handle collision by Rejecting
+
                 print(f"Hostname conflict for {hostname} (MAC: {mac_address}). Existing MAC: {machine_by_host.mac_address}")
                 raise HTTPException(status_code=409, detail="Hostname collision: Hostname already taken by another device.")
                 
@@ -164,8 +164,7 @@ def heartbeat(
         else:
             # Machine found by MAC
             
-            # SECURITY FIX: Verify Machine Token if it exists
-            # SECURITY FIX: Verify Machine Token if it exists
+
             if machine.api_key:
                 token_header = request.headers.get("X-Machine-Token")
                 # Handle case where header might be missing or different
@@ -185,14 +184,14 @@ def heartbeat(
                 
             if machine_by_host:
                     # Hostname collision! 
-                    # Fix: Handle collision by renaming instead of DoS
+
                     suffix = secrets.token_hex(2) 
                     new_hostname = f"{hostname}-dup-{suffix}"
                     print(f"SECURITY WARNING: Machine {machine.mac_address} tried to change hostname to {hostname}, which is claimed. Renaming to {new_hostname}")
                     hostname = new_hostname
                     # Continue with new hostname
                     
-                    # OLD LOGIC REMOVED security fix
+
                     # session.delete(machine) ...
             
         # Update machine details
@@ -200,14 +199,14 @@ def heartbeat(
             machine.hostname = hostname
             machine.os_info = os_info
             # Ip Address Security / IDOR prep
-            # Bug Fix 1: Trust X-Forwarded-For ONLY if configured (Security)
+
             # Use unified helper
             resolved_ip = get_client_ip(request)
             
             if resolved_ip:
                 machine.ip_address = resolved_ip
                  
-            # Fix: Always update OU path to keep it fresh from AD/Logic
+
             machine.ou_path = ou_path
             session.add(machine)
         
@@ -222,8 +221,8 @@ def heartbeat(
             session.commit()
             session.refresh(machine)
         except Exception as e:
-            # Bug 3 Fix: Handle IntegrityError explicitly for Hostname Collision
-            # and implement retry logic.
+
+
             session.rollback()
             from sqlalchemy.exc import IntegrityError
             
@@ -262,7 +261,7 @@ def heartbeat(
                             api_key=secrets.token_urlsafe(32) # New Token
                         )
                         session.add(machine_retry)
-                        # Fix: Ensure logic uses machine_retry
+
                         machine = machine_retry
 
                     session.commit()
@@ -293,7 +292,7 @@ def heartbeat(
         # Calculate parent OUs for OU targeting
         parent_ous = []
         if machine.ou_path and machine.ou_path != "Unknown":
-            # Bug Fix 4: Use robust DN parsing instead of naive Regex
+
             from ldap3.utils.dn import parse_dn
             
             # parse_dn returns list of (attr, val, sep)
@@ -376,7 +375,7 @@ def heartbeat(
         
         from models import MachineSoftwareLink
     
-        # Fix N+1: Fetch all links at once
+        # Fetch all links at once
         dep_software_ids = [d.software_id for d in potential_deployments]
         existing_links = session.exec(select(MachineSoftwareLink).where(
             (MachineSoftwareLink.machine_id == machine.id) &
@@ -412,7 +411,7 @@ def heartbeat(
                     machine_dn = machine.ou_path.lower()
                     target_dn = dep.target_value.lower()
                     
-                    # Fix: Ensure we match if target_dn is a parent in the machine_dn tree
+
                     # e.g. target="cn=computers,dc=local" and machine="cn=pc1,cn=computers,dc=local"
                     if machine_dn.endswith(target_dn):
                          # Ensure boundary correctness (comma or exact match)
@@ -443,7 +442,7 @@ def heartbeat(
                     # For FAILED, we should allow retry after some time (e.g., 1 hour)
                     if link:
                         if link.status == "installed":
-                            # VERSION CHECK FIX
+
                             installed_ver = link.installed_version
                             target_ver = dep.software.version
                             if installed_ver and installed_ver == target_ver:
@@ -478,7 +477,7 @@ def heartbeat(
                 download_url = dep.software.download_url
                 if download_url and download_url.startswith("/"):
                     # Construct absolute URL using secure BASE_URL
-                    # Fix: Host Header Injection validation
+
                     base_url = settings.BASE_URL.rstrip("/")
                     download_url = f"{base_url}{download_url}"
 
@@ -546,7 +545,7 @@ def acknowledge_task(
         print(f"SECURITY WARNING: Ack received for machine {mac_address} without API Key.")
         raise HTTPException(status_code=403, detail="Machine not provisioned (No API Key)")
 
-    # FIX Bug 5: Validate Deployment Target
+
     # Check if deployment actually belongs to this machine
     is_valid_target = False
     if deployment.target_type == "machine":
@@ -634,7 +633,7 @@ def log_agent_event(
     valid_levels = {"INFO", "WARN", "ERROR"}
     level = data.level.upper()
     if level not in valid_levels:
-        # Fix: Reject invalid levels or Warn? Rejecting is better for API contract.
+
         # level = "INFO" 
         raise HTTPException(status_code=400, detail=f"Invalid log level. Must be one of {valid_levels}")
     
@@ -650,10 +649,10 @@ def log_agent_event(
         if machine.ip_address and current_ip:
             if machine.ip_address != current_ip:
                 print(f"SECURITY ALERT: Log attempt for {mac_address} from unauthorized IP {current_ip} (Expected {machine.ip_address}). Blocking.")
-                # Bug Fix 2: Strictly enforce IP matching
+
                 raise HTTPException(status_code=403, detail="IP Address Mismatch")
         
-        # Bug 5 Fix: Rate Limiting
+
         # Limit logs to 60 per minute per machine
         from sqlalchemy import func
         cutoff = datetime.now(timezone.utc) - timedelta(minutes=1)
@@ -674,7 +673,7 @@ def log_agent_event(
         # Security: Verify Machine Token
         token_header = request.headers.get("X-Machine-Token")
         
-        # Bug Fix 3: Enforce token presence and validity
+
         if not machine.api_key:
              print(f"SECURITY WARNING: Log attempt for {mac_address} which is not provisioned (No API Key).")
              raise HTTPException(status_code=403, detail="Machine not provisioned")

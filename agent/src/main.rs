@@ -287,7 +287,7 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     let raw_name = task.download_url.split('/').last().unwrap_or("installer.exe");
     let base_name = raw_name.split('?').next().unwrap_or("installer.exe");
     
-    // Bug Fix 9: Sanitize Filename (Prevent Path Traversal)
+
     // Extract just the filename component
     let file_name = std::path::Path::new(base_name)
         .file_name()
@@ -319,13 +319,13 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     info!("Download complete.");
 
     // 2. Install / Uninstall
-    // Fix: Use custom split_args to handle quotes
+
     let mut args: Vec<String> = split_args(&task.silent_args);
     let mut command_path = file_path.clone();
     
     if task.task_type == "uninstall" {
         info!("Executing UNINSTALL...");
-        // Bug Fix 3: Check file_name (cleaned) instead of raw URL
+
         if file_name.to_lowercase().ends_with(".msi") {
             // For MSI, we use msiexec /x <file> /qn
             command_path = std::path::PathBuf::from("msiexec");
@@ -370,7 +370,7 @@ async fn process_task(task: &Task, config: &AgentConfig, client: &reqwest::Clien
     } else {
         // INSTALL
         info!("Executing installer with args: {}", task.silent_args);
-        // Bug Fix 3: Check file_name (cleaned) instead of raw URL
+
         if file_name.to_lowercase().ends_with(".msi") {
              info!("Detected MSI installer. Using msiexec.");
              command_path = std::path::PathBuf::from("msiexec");

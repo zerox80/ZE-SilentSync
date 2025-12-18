@@ -41,7 +41,7 @@ def seed_data():
                 session.add(s)
             
             # Seed a Mock Machine for testing
-            # Security Fix: Do NOT seed a default machine with known details in production.
+
             # if not session.exec(select(Machine)).first():
             #      session.add(Machine(hostname="TEST-PC-01", mac_address="00:11:22:33:44:55", os_info="Windows 11 Pro", ou_path="OU=Sales,DC=example,DC=com"))
             
@@ -54,13 +54,13 @@ def seed_data():
     
     with Session(engine) as session:
         if not session.exec(select(Admin)).first():
-            # Fix: Do NOT fallback to SECRET_KEY. Generate a random password if not set.
+
             password = settings.ADMIN_PASSWORD
             
             if not password:
                 import secrets
                 password = secrets.token_urlsafe(12)
-                # Bug Fix 2: Do NOT print password to stdout in production.
+
                 if settings.USE_MOCK_LDAP:
                      print(f"WARNING: ADMIN_PASSWORD not set. Generated temporary password: {password}")
                 else:

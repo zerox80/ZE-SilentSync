@@ -22,7 +22,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
     # 2. Try LDAP Auth
     # 2. Try LDAP Auth
-    # Fix: Enable LDAP Authentication with status check
+
     ldap_status = ldap_service.verify_user(form_data.username, form_data.password)
     
     if ldap_status == "SUCCESS":
@@ -63,7 +63,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
         )
         return {"access_token": access_token, "token_type": "bearer"}
     elif ldap_status == "INVALID_CREDENTIALS":
-        # Security Fix: If LDAP denies explicit credentials, do NOT fall back to local DB.
+
         # This prevents using old cached passwords if the user is still in AD but password changed.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -79,9 +79,9 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
     user = session.exec(statement).first()
     
     # Mock Auth for Prototype if user exists (or if we just created 'admin')
-    # Timing Attack Fix: Always run verify_password
+
     # Mock Auth for Prototype if user exists (or if we just created 'admin')
-    # Timing Attack Fix: Always run verify_password
+
     if not user:
         # Dummy verification to consume same time
         # Use a consistent dummy hash to avoid recalculating it every time, but generated securely or standard
@@ -96,7 +96,7 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
             headers={"WWW-Authenticate": "Bearer"},
         )
         
-    # Bug Fix: Run CPU-bound bcrypt in threadpool to prevent blocking async loop
+
     try:
         is_correct_password = await run_in_threadpool(verify_password, form_data.password, user.hashed_password)
     except ValueError:

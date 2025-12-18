@@ -56,7 +56,7 @@ async def get_current_admin(token: str = Depends(oauth2_scheme), session: Sessio
 
 async def verify_agent_token(token: str = Depends(api_key_header)):
     # Use the configured AGENT_TOKEN
-    # Fix Bug 1: Handle case where AGENT_TOKEN might not be loaded yet or is None (though config now enforces it)
+
     if not settings.AGENT_TOKEN:
          print("CRITICAL: AGENT_TOKEN not configured on server.")
          raise HTTPException(status_code=500, detail="Server Configuration Error")

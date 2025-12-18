@@ -59,7 +59,7 @@ class LDAPService:
             return "SUCCESS" # In mock mode, any password works for 'admin' usually
             
         try:
-            # Fix: Use AD_SERVER and bind with the user's credentials
+
             from ldap3.core.exceptions import LDAPBindError
 
             try:
@@ -92,7 +92,7 @@ class LDAPService:
     def resolve_machine_ou(self, hostname: str, session: Optional[Session] = None) -> str:
         """Finds the DN for a given hostname."""
         if settings.AGENT_ONLY:
-            # Fix: Use dynamic root matching configured base DN or fallback
+
             return f"CN={escape_dn_chars(hostname)},OU=Agents,{settings.AD_BASE_DN}"
             
         if settings.USE_MOCK_LDAP:
@@ -123,7 +123,7 @@ class LDAPService:
                     return str(conn.entries[0].distinguishedName)
             return "Unknown"
         except Exception as e:
-            # Fix Bug 8: Improve error logging for debugging
+
             print(f"LDAP Lookup Error in resolve_machine_ou for {hostname}: {e}")
             return "Unknown"
 
@@ -150,7 +150,7 @@ class LDAPService:
 
         children_nodes = []
         for machine in machines:
-            # Fix: Use configured Root
+
             machine_dn = f"CN={escape_dn_chars(machine.hostname)},OU=Agents,{root_dn}"
             # Use ID as string for key if needed, or DN
             children_nodes.append({
@@ -180,7 +180,7 @@ class LDAPService:
         """Connects to real AD and builds the tree."""
         try:
             server = Server(settings.AD_SERVER, get_info=ALL, connect_timeout=2)
-            # Fix: Use context manager to ensure unbind
+
             with Connection(
                 server,
                 user=settings.AD_USER,
@@ -201,7 +201,7 @@ class LDAPService:
             # Build a hierarchical tree structure
             
             # Map all OUs by DN
-            # Fix: Normalize DN keys to ensure matching (lowercase keys)
+
             ou_map = {}
             for ou in ous:
                 ou_dn = str(ou.distinguishedName)
@@ -224,7 +224,7 @@ class LDAPService:
             # Helper to find parent DN
             def get_parent_dn(dn):
                 try:
-                    # Fix Bug 1: Use robust DN parsing
+
                     parsed = parse_dn(dn)
                     if len(parsed) > 1:
                         # Reconstruct parent by skipping the first RDN

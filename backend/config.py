@@ -43,13 +43,13 @@ class Settings:
     MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE", 10 * 1024 * 1024 * 1024)) # 10 GB Default
 
     def __init__(self):
-        # Fix: Load from .env first, then secrets file fallback
+
         self._load_from_secrets_file()
         
         # Load again from env to ensure priority
         self.AD_PASSWORD = os.getenv("AD_PASSWORD", self.AD_PASSWORD)
         self.SECRET_KEY = os.getenv("SECRET_KEY", self.SECRET_KEY)
-        # Fix: AGENT_TOKEN fallback should use the value loaded from secrets.env if not in os.getenv
+
         self.AGENT_TOKEN = os.getenv("AGENT_TOKEN", self.AGENT_TOKEN)
 
         if not self.USE_MOCK_LDAP:
@@ -69,7 +69,7 @@ class Settings:
         # Default token logic: "agent-" + first 8 chars of SECRET_KEY (see SETUP.md)
         if not self.AGENT_TOKEN:
             if not self.USE_MOCK_LDAP:
-                # Security Fix: In production, we must persist this token if possible, otherwise agents disconnect on restart.
+
                 print("CRITICAL WARNING: AGENT_TOKEN is missing in production! Generating and SAVING a random token.")
                 self.AGENT_TOKEN = f"agent-PROD-{secrets.token_urlsafe(24)}"
                 self._save_secret("AGENT_TOKEN", self.AGENT_TOKEN)
@@ -92,14 +92,14 @@ class Settings:
                         for line in f:
                             if "=" in line:
                                 k, v = line.strip().split("=", 1)
-                                # Fix: Do not mutate global os.environ
+
                                 # if k not in os.environ:
                                 #    os.environ[k] = v
                                 
                                 # Also update self if it maps to a property, respecting type
                                 if hasattr(self, k):
                                     current_val = getattr(self, k)
-                                    # Fix: Handle None values - treat as string type
+
                                     if current_val is None:
                                         v_typed = v
                                     else:
