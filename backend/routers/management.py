@@ -160,6 +160,44 @@ def get_ad_tree(session: Session = Depends(get_session)):
 def get_machines(offset: int = 0, limit: int = 100, session: Session = Depends(get_session)):
     return session.exec(select(Machine).offset(offset).limit(limit)).all()
 
+@router.delete("/machines/{machine_id}")
+def delete_machine(machine_id: int, session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
+    """Delete a machine and all associated data (links, logs)."""
+    machine = session.get(Machine, machine_id)
+    if not machine:
+        raise HTTPException(status_code=404, detail="Machine not found")
+    
+    if admin.role != "superadmin":
+        raise HTTPException(status_code=403, detail="Insufficient privileges. Required: superadmin")
+    
+    hostname = machine.hostname
+    
+    # Delete associated MachineSoftwareLinks
+    links = session.exec(select(MachineSoftwareLink).where(MachineSoftwareLink.machine_id == machine_id)).all()
+    for link in links:
+        session.delete(link)
+    
+    # Delete associated AgentLogs
+    from models import AgentLog
+    logs = session.exec(select(AgentLog).where(AgentLog.machine_id == machine_id)).all()
+    for log in logs:
+        session.delete(log)
+    
+    # Audit Log
+    session.add(AuditLog(
+        admin_id=admin.id,
+        action="delete_machine",
+        target=hostname,
+        details=f"MAC: {machine.mac_address}, IP: {machine.ip_address}",
+        level="WARNING"
+    ))
+    
+    # Delete the machine
+    session.delete(machine)
+    session.commit()
+    
+    return {"status": "deleted", "id": machine_id, "hostname": hostname}
+
 @router.post("/deploy")
 def create_deployment(software_id: int, target_dn: str, target_type: str, action: str = "install", session: Session = Depends(get_session), admin: Admin = Depends(get_current_admin)):
     if not target_dn or not target_dn.strip():

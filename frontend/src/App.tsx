@@ -1,9 +1,10 @@
 import { ReactNode } from 'react'
-import { LayoutDashboard, AppWindow, Network, Send, LogOut } from 'lucide-react'
+import { LayoutDashboard, AppWindow, Network, Send, LogOut, Monitor } from 'lucide-react'
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import SoftwareLibrary from './components/SoftwareLibrary'
 import DeploymentWizard from './components/DeploymentWizard'
 import DeploymentsView from './components/DeploymentsView'
+import MachinesView from './components/MachinesView'
 import { AuthProvider, useAuth } from './auth/AuthContext'
 import Login from './components/Login'
 
@@ -83,6 +84,12 @@ function AppContent() {
                         icon={<Send size={20} />}
                         label="Deployments"
                     />
+                    <NavButton
+                        active={currentPath === '/machines'}
+                        onClick={() => navigate('/machines')}
+                        icon={<Monitor size={20} />}
+                        label="Machines"
+                    />
                 </nav>
 
                 <div className="p-4 border-t border-gray-800">
@@ -113,6 +120,7 @@ function AppContent() {
                             </div>
                         } />
                         <Route path="/deployments" element={<DeploymentsView />} />
+                        <Route path="/machines" element={<MachinesView />} />
                     </Routes>
                 </ErrorBoundary>
             </main>
